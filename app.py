@@ -923,24 +923,46 @@ with col1:
     # Mostrar el mapa
     st.components.v1.html(mapa_html, height=600, scrolling=False)
     
-    # Escuchar mensajes del mapa simplificado
-    st.components.v1.html("""
-    <script>
-    // Función para detectar mensajes del mapa
-    window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'coordenadas_seleccionadas') {
-            const coords = event.data.coords;
-            
-            // Usar el objeto Streamlit global
-            if (window.parent.Streamlit) {
-                window.parent.Streamlit.setComponentValue({
-                    coordenadas: coords
-                });
+    # Escuchar mensajes del mapa simplificado con función de retrollamada
+    components.html(
+        """
+        <script>
+        // Función para escuchar mensajes del mapa
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'coordenadas_seleccionadas') {
+                var coords = event.data.coords;
+                console.log('Coordenadas recibidas:', coords);
+                
+                // Intentar todas las formas posibles de enviar el mensaje a Streamlit
+                try {
+                    if (window.parent && window.parent.Streamlit) {
+                        // Método oficial de Streamlit
+                        window.parent.Streamlit.setComponentValue({coordenadas: coords});
+                        console.log('Enviado con Streamlit.setComponentValue');
+                    } else {
+                        // Método alternativo mediante recarga de URL
+                        var currentUrl = new URL(window.location.href);
+                        currentUrl.searchParams.set('lat', coords[0]);
+                        currentUrl.searchParams.set('lng', coords[1]);
+                        window.location.href = currentUrl.toString();
+                        console.log('Enviado mediante recarga de URL');
+                    }
+                } catch (error) {
+                    console.error('Error al enviar coordenadas:', error);
+                    
+                    // Método de último recurso
+                    var currentUrl = new URL(window.location.href);
+                    currentUrl.searchParams.set('lat', coords[0]);
+                    currentUrl.searchParams.set('lng', coords[1]);
+                    window.location.href = currentUrl.toString();
+                    console.log('Enviado mediante método de respaldo');
+                }
             }
-        }
-    });
-    </script>
-    """, height=0)
+        });
+        </script>
+        """, 
+        height=0
+    )
     
     # Componente personalizado para recibir las coordenadas
     coordenadas_component = st.empty()
