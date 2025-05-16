@@ -18,11 +18,11 @@ if 'punto_seleccionado' not in st.session_state:
 if 'busqueda_realizada' not in st.session_state:
     st.session_state.busqueda_realizada = False
 if 'latitud_input' not in st.session_state:
-    st.session_state.latitud_input = -34.603722
+    st.session_state.latitud_input = -34.6037
 if 'longitud_input' not in st.session_state:
-    st.session_state.longitud_input = -58.381592
-if 'usar_coords_clicked' not in st.session_state:
-    st.session_state.usar_coords_clicked = False
+    st.session_state.longitud_input = -58.3816
+if 'coordenadas_seleccionadas' not in st.session_state:
+    st.session_state.coordenadas_seleccionadas = None
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -128,6 +128,12 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
     
     return cercanos
 
+# Callback para actualizar coordenadas desde JavaScript
+def handle_coords(lat, lng):
+    st.session_state.coordenadas_seleccionadas = (lat, lng)
+    st.session_state.punto_seleccionado = (lat, lng)
+    st.session_state.busqueda_realizada = True
+
 # Mostrar mensaje de instrucciones
 with st.sidebar:
     st.info(f"""
@@ -205,12 +211,11 @@ with col1:
             
             // Agregar capa base de satélite (ESRI) por defecto
             L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
-                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                attribution: 'Tiles &copy; Esri'
             }}).addTo(map);
             
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
-            let circuloRadio = null;
             
             // Evento de clic en el mapa
             map.on('click', function(e) {{
@@ -226,12 +231,7 @@ with col1:
                     map.removeLayer(puntoSeleccionado);
                 }}
                 
-                // Si ya hay un círculo, eliminarlo
-                if (circuloRadio) {{
-                    map.removeLayer(circuloRadio);
-                }}
-                
-                // Crear un nuevo marcador
+                // Crear un nuevo marcador preciso (solo un punto, sin círculo)
                 puntoSeleccionado = L.marker([lat, lng], {{
                     icon: L.icon({{
                         iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
@@ -242,14 +242,6 @@ with col1:
                         shadowSize: [41, 41]
                     }})
                 }}).addTo(map);
-                
-                // Crear un círculo con el radio de búsqueda
-                circuloRadio = L.circle([lat, lng], {{
-                    color: 'red',
-                    fillColor: '#f03',
-                    fillOpacity: 0.2,
-                    radius: {radio_busqueda} * 1000 // Convertir km a metros
-                }}).addTo(map);
             }});
             
             // Evento para el botón de usar coordenadas
@@ -258,28 +250,49 @@ with col1:
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Crear un formulario oculto para enviar las coordenadas
-                    var form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = '';
-                    
-                    // Crear campos ocultos para las coordenadas
-                    var latField = document.createElement('input');
-                    latField.type = 'hidden';
-                    latField.name = 'lat';
-                    latField.value = lat;
-                    form.appendChild(latField);
-                    
-                    var lngField = document.createElement('input');
-                    lngField.type = 'hidden';
-                    lngField.name = 'lng';
-                    lngField.value = lng;
-                    form.appendChild(lngField);
-                    
-                    document.body.appendChild(form);
-                    form.submit();
+                    // Enviar datos de vuelta a Streamlit
+                    const inputs = parent.document.querySelectorAll('input[type=number]');
+                    if (inputs.length >= 2) {{
+                        // Actualizar los campos de entrada numérica
+                        inputs[0].value = lat;
+                        inputs[1].value = lng;
+                        
+                        // Buscar el botón "Buscar en estas coordenadas" y hacer clic en él
+                        const buttons = parent.document.querySelectorAll('button');
+                        for (let i = 0; i < buttons.length; i++) {{
+                            if (buttons[i].innerText.includes('Buscar en estas coordenadas')) {{
+                                buttons[i].click();
+                                break;
+                            }}
+                        }}
+                    }}
                 }}
             }});
+            
+            // Si hay un punto seleccionado previamente, mostrarlo
+            {f"const lat = {st.session_state.punto_seleccionado[0]}; const lng = {st.session_state.punto_seleccionado[1]};" if st.session_state.punto_seleccionado else ""}
+            {"""
+            if (lat && lng) {
+                // Crear marcador para el punto guardado
+                puntoSeleccionado = L.marker([lat, lng], {
+                    icon: L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    })
+                }).addTo(map);
+                
+                // Actualizar texto de coordenadas
+                document.getElementById('selected-lat').textContent = lat.toFixed(4);
+                document.getElementById('selected-lng').textContent = lng.toFixed(4);
+                
+                // Centrar el mapa en el punto guardado
+                map.setView([lat, lng], 15);
+            }
+            """ if st.session_state.punto_seleccionado else ""}
         </script>
         """
         
@@ -299,37 +312,13 @@ with col1:
         if st.button("Buscar en estas coordenadas"):
             st.session_state.punto_seleccionado = (lat_input, lon_input)
             st.session_state.busqueda_realizada = True
-            st.experimental_rerun()
+            st.rerun()
     else:
         st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
 
 # Panel de resultados
 with col2:
     st.subheader("Resultados de la búsqueda")
-    
-    # Procesar el formulario si se envió
-    form_data = st.experimental_get_query_params()
-    if "lat" in form_data and "lng" in form_data:
-        try:
-            lat = float(form_data["lat"][0])
-            lng = float(form_data["lng"][0])
-            st.session_state.punto_seleccionado = (lat, lng)
-            st.session_state.busqueda_realizada = True
-        except:
-            pass
-    
-    # Procesar POST request
-    if st.experimental_get_query_params():
-        # Obtener datos del formulario
-        form_data = st.experimental_get_query_params()
-        if "lat" in form_data and "lng" in form_data:
-            try:
-                lat = float(form_data["lat"][0])
-                lng = float(form_data["lng"][0])
-                st.session_state.punto_seleccionado = (lat, lng)
-                st.session_state.busqueda_realizada = True
-            except:
-                pass
     
     # Mostrar resultados si hay un punto seleccionado
     if st.session_state.busqueda_realizada and st.session_state.punto_seleccionado:
