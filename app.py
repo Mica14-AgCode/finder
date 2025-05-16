@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import os
+import json
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -12,7 +13,9 @@ st.title("Visor de Productores Agrícolas")
 # Ruta al archivo CSV
 RUTA_CSV = "datos_productores.csv"
 
-# Inicializar variables de estado si no existen
+# Inicializar variables de estado
+if 'punto_seleccionado' not in st.session_state:
+    st.session_state.punto_seleccionado = None
 if 'radio_busqueda' not in st.session_state:
     st.session_state.radio_busqueda = 200.0
 
@@ -52,6 +55,7 @@ def crear_datos_ejemplo():
         'latitud': [-34.0, -34.2, -34.1, -33.9]
     })
 
+@st.cache_data
 def cargar_datos(ruta_archivo=RUTA_CSV):
     """Carga los datos de productores desde un archivo CSV"""
     try:
@@ -137,66 +141,248 @@ datos_productores = cargar_datos()
 if not datos_productores.empty:
     st.success(f"Datos cargados correctamente: {len(datos_productores)} registros")
 
-# Formulario de búsqueda
-st.header("Buscar por coordenadas")
+# Layout principal
+col1, col2 = st.columns([3, 1])
 
-col1, col2 = st.columns(2)
 with col1:
-    latitud = st.number_input("Latitud:", value=-34.603722, format="%.6f")
-with col2:
-    longitud = st.number_input("Longitud:", value=-58.381592, format="%.6f")
-
-if st.button("Buscar productores cercanos", type="primary", use_container_width=True):
-    with st.spinner(f"Buscando productores en un radio de {radio_busqueda} km..."):
-        # Buscar productores cercanos
-        productores_cercanos = encontrar_cuits_cercanos(latitud, longitud, datos_productores, radio_km=radio_busqueda)
+    st.subheader("Mapa Interactivo")
     
-    # Mostrar resultados
-    st.header("Resultados de la búsqueda")
-    st.write(f"**Coordenadas consultadas:** Lat {latitud:.6f}, Lng {longitud:.6f}")
-    
-    if productores_cercanos:
-        st.success(f"Se encontraron {len(productores_cercanos)} productores en un radio de {radio_busqueda} km")
-        
-        # Productor más cercano
-        mas_cercano = productores_cercanos[0]
-        
-        st.subheader("Productor más cercano:")
-        st.markdown(f"""
-        **CUIT:** {mas_cercano['cuit']}  
-        **Razón Social:** {mas_cercano['titular']}  
-        **Distancia:** {mas_cercano['distancia']} km  
-        **Localidad:** {mas_cercano.get('localidad', 'No disponible')}  
-        **Coordenadas:** Lat {mas_cercano['latitud']:.6f}, Lng {mas_cercano['longitud']:.6f}
-        """)
-        
-        # Tabla de todos los productores cercanos
-        st.subheader(f"Todos los productores (radio {radio_busqueda} km):")
-        
-        # Crear un DataFrame para la tabla
-        tabla_data = []
-        for productor in productores_cercanos:
-            tabla_data.append({
-                "CUIT": productor['cuit'],
-                "Razón Social": productor['titular'],
-                "Distancia (km)": productor['distancia'],
-                "Localidad": productor.get('localidad', '')
-            })
-        
-        # Mostrar tabla
-        st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
-        
-        # Mostrar detalles expandibles
-        for i, productor in enumerate(productores_cercanos[:10]):  # Limitar a los 10 más cercanos
-            with st.expander(f"{i+1}. {productor['titular']} ({productor['distancia']} km)"):
-                st.markdown(f"""
-                **CUIT:** {productor['cuit']}  
-                **Razón Social:** {productor['titular']}  
-                **RENSPA:** {productor.get('renspa', 'No disponible')}  
-                **Localidad:** {productor.get('localidad', 'No disponible')}  
-                **Superficie:** {productor.get('superficie', 'No disponible')} ha  
-                **Distancia:** {productor['distancia']} km  
-                **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
-                """)
+    # Calcular centro del mapa
+    if datos_productores.empty:
+        centro_lat = -34.0
+        centro_lon = -60.0
     else:
-        st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
+        centro_lat = datos_productores['latitud'].mean()
+        centro_lon = datos_productores['longitud'].mean()
+    
+    # Contenido HTML para el mapa Leaflet
+    mapa_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+        <style>
+            #map {{
+                width: 100%;
+                height: 500px;
+                border-radius: 8px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            }}
+            #info-panel {{
+                margin-top: 10px;
+                padding: 10px;
+                background-color: #f8f9fa;
+                border-radius: 8px;
+                box-shadow: 0 0 5px rgba(0,0,0,0.1);
+            }}
+            .coord-value {{
+                font-weight: bold;
+                color: #333;
+            }}
+            #use-coords-btn {{
+                margin-top: 10px;
+                padding: 8px 16px;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+            }}
+            #use-coords-btn:hover {{
+                background-color: #45a049;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <div id="info-panel">
+            <div>Coordenadas seleccionadas: <span id="coords-display">Haz clic en el mapa</span></div>
+            <button id="use-coords-btn">Buscar en estas coordenadas</button>
+        </div>
+        
+        <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+        <script>
+            // Variables globales
+            let map;
+            let selectedMarker = null;
+            let selectedCoords = null;
+            
+            // Inicializar el mapa cuando cargue la página
+            document.addEventListener('DOMContentLoaded', initMap);
+            
+            function initMap() {{
+                // Crear el mapa
+                map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
+                
+                // Agregar capa base - Satélite
+                const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+                    attribution: 'Tiles &copy; Esri'
+                }});
+                
+                // Agregar capa base - OpenStreetMap
+                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }});
+                
+                // Agregar capas al mapa
+                satelliteLayer.addTo(map);
+                
+                // Configurar control de capas
+                const baseMaps = {{
+                    "Satélite": satelliteLayer,
+                    "Mapa": osmLayer
+                }};
+                
+                L.control.layers(baseMaps).addTo(map);
+                
+                // Evento de clic en el mapa
+                map.on('click', function(e) {{
+                    const lat = e.latlng.lat;
+                    const lng = e.latlng.lng;
+                    
+                    // Actualizar coordenadas seleccionadas
+                    selectedCoords = [lat, lng];
+                    document.getElementById('coords-display').textContent = `Lat: ${{lat.toFixed(6)}}, Lng: ${{lng.toFixed(6)}}`;
+                    
+                    // Actualizar marcador
+                    if (selectedMarker) {{
+                        map.removeLayer(selectedMarker);
+                    }}
+                    selectedMarker = L.marker([lat, lng]).addTo(map);
+                }});
+                
+                // Evento para botón de búsqueda
+                document.getElementById('use-coords-btn').addEventListener('click', function() {{
+                    if (!selectedCoords) {{
+                        alert('Primero selecciona un punto en el mapa');
+                        return;
+                    }}
+                    
+                    // Enviar mensaje a la página principal
+                    window.parent.postMessage({{
+                        type: 'coordenadas_seleccionadas',
+                        coords: selectedCoords
+                    }}, '*');
+                }});
+            }}
+        </script>
+    </body>
+    </html>
+    """
+    
+    # Mostrar el mapa
+    st.components.v1.html(mapa_html, height=600, scrolling=False)
+    
+    # Código JavaScript para recibir mensajes del mapa
+    js_code = """
+    <script>
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'coordenadas_seleccionadas') {
+            // Crear un formulario oculto para enviar las coordenadas a Streamlit
+            var form = document.createElement('form');
+            form.method = 'GET';
+            form.action = window.location.href;
+
+            // Agregar parámetros de coordenadas
+            var lat = document.createElement('input');
+            lat.type = 'hidden';
+            lat.name = 'lat';
+            lat.value = event.data.coords[0];
+            form.appendChild(lat);
+
+            var lng = document.createElement('input');
+            lng.type = 'hidden';
+            lng.name = 'lng';
+            lng.value = event.data.coords[1];
+            form.appendChild(lng);
+
+            // Enviar el formulario
+            document.body.appendChild(form);
+            form.submit();
+        }
+    });
+    </script>
+    """
+    st.components.v1.html(js_code, height=0)
+    
+    # Verificar si hay parámetros en la URL
+    query_params = st.experimental_get_query_params()
+    if 'lat' in query_params and 'lng' in query_params:
+        try:
+            lat = float(query_params['lat'][0])
+            lon = float(query_params['lng'][0])
+            st.session_state.punto_seleccionado = (lat, lon)
+            # Limpiar los parámetros para evitar duplicados
+            st.experimental_set_query_params()
+            st.experimental_rerun()
+        except:
+            st.error("Error al procesar las coordenadas")
+
+with col2:
+    st.subheader("Buscar por coordenadas")
+    
+    with st.form("busqueda_manual"):
+        col_lat, col_lon = st.columns(2)
+        with col_lat:
+            latitud = st.number_input("Latitud:", value=-34.603722, format="%.6f")
+        with col_lon:
+            longitud = st.number_input("Longitud:", value=-58.381592, format="%.6f")
+        
+        submit_btn = st.form_submit_button("Buscar productores cercanos", use_container_width=True)
+        if submit_btn:
+            st.session_state.punto_seleccionado = (latitud, longitud)
+
+    # Mostrar resultados si hay un punto seleccionado
+    if st.session_state.punto_seleccionado:
+        lat, lon = st.session_state.punto_seleccionado
+        st.success(f"Punto seleccionado: Lat {lat:.6f}, Lng {lon:.6f}")
+        
+        # Buscar productores cercanos
+        with st.spinner(f"Buscando productores en un radio de {radio_busqueda} km..."):
+            productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+        
+        st.subheader("Resultados de la búsqueda")
+        
+        if productores_cercanos:
+            st.success(f"Se encontraron {len(productores_cercanos)} productores en un radio de {radio_busqueda} km")
+            
+            # Productor más cercano
+            mas_cercano = productores_cercanos[0]
+            
+            st.markdown("### Productor más cercano:")
+            st.markdown(f"""
+            **CUIT:** {mas_cercano['cuit']}  
+            **Razón Social:** {mas_cercano['titular']}  
+            **Distancia:** {mas_cercano['distancia']} km  
+            **Localidad:** {mas_cercano.get('localidad', 'No disponible')}  
+            **Coordenadas:** Lat {mas_cercano['latitud']:.6f}, Lng {mas_cercano['longitud']:.6f}
+            """)
+            
+            # Tabla de todos los productores cercanos
+            st.markdown("### Todos los productores cercanos:")
+            
+            # Crear un DataFrame para la tabla
+            tabla_data = []
+            for productor in productores_cercanos:
+                tabla_data.append({
+                    "CUIT": productor['cuit'],
+                    "Razón Social": productor['titular'],
+                    "Distancia (km)": productor['distancia'],
+                    "Localidad": productor.get('localidad', '')
+                })
+            
+            # Mostrar tabla
+            st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
+        else:
+            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
+
+# Instrucciones para usar el mapa
+st.markdown("---")
+st.subheader("Instrucciones de uso")
+st.markdown("""
+1. **Selección de punto**: Haz clic en el mapa para seleccionar un punto.
+2. **Búsqueda**: Haz clic en "Buscar en estas coordenadas" para encontrar productores cercanos.
+3. **Búsqueda manual**: Alternativamente, puedes ingresar coordenadas manualmente en el formulario.
+4. **Radio de búsqueda**: Ajusta el radio de búsqueda en el panel lateral para ampliar o reducir el área de búsqueda.
+""")
