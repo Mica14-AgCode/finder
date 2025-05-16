@@ -1,9 +1,3 @@
-import streamlit as st
-import pandas as pd
-import math
-import os
-import json
-import time
     # Para depuración
     debug_checkbox = st.checkbox("Mostrar información de depuración")
     
@@ -31,6 +25,11 @@ import time
                         poligono_text = str(fila['poligono'])
                         st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
                         breakimport streamlit as st
+import pandas as pd
+import math
+import os
+import json
+import time
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
