@@ -4,6 +4,33 @@ import math
 import os
 import json
 import time
+    # Para depuración
+    debug_checkbox = st.checkbox("Mostrar información de depuración")
+    
+    if debug_checkbox:
+        st.write("Estado de la aplicación:")
+        st.write({
+            "punto_seleccionado": st.session_state.punto_seleccionado,
+            "mostrar_resultado": st.session_state.mostrar_resultado,
+            "busqueda_realizada": st.session_state.busqueda_realizada,
+            "productores_cercanos_count": len(st.session_state.productores_cercanos) if hasattr(st.session_state, 'productores_cercanos') and st.session_state.productores_cercanos else 0,
+            "poligonos_encontrados": len(poligonos_result)
+        })
+        
+        if 'poligono' in datos_productores.columns:
+            st.write(f"La columna 'poligono' existe en el CSV")
+            
+            # Mostrar algunos ejemplos de polígonos
+            poligonos_count = datos_productores['poligono'].notna().sum()
+            st.write(f"Número de polígonos en el CSV: {poligonos_count}")
+            
+            if poligonos_count > 0:
+                st.write("Ejemplos de polígonos del CSV:")
+                for i, fila in datos_productores.iterrows():
+                    if pd.notna(fila.get('poligono')):
+                        poligono_text = str(fila['poligono'])
+                        st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
+                        breakimport streamlit as st
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -305,10 +332,46 @@ with col1:
     poligonos_result = []
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
         # Usar los productores cercanos ya calculados
-        if st.session_state.productores_cercanos:
+        if hasattr(st.session_state, 'productores_cercanos') and st.session_state.productores_cercanos:
             productores_cercanos = st.session_state.productores_cercanos
             
             # Solo incluir polígonos de productores cercanos
+            cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
+            
+            # Forzar la búsqueda de polígonos aunque no se hayan calculado aún
+            if not poligonos_result and 'poligono' in datos_productores.columns:
+                for idx, fila in datos_productores.iterrows():
+                    if pd.notna(fila['poligono']) and fila['cuit'] in cuits_cercanos:
+                        coords = wkt_a_coordenadas(fila['poligono'])
+                        if coords:
+                            poligonos_result.append({
+                                'coords': coords,
+                                'cuit': fila['cuit'],
+                                'titular': fila['titular'],
+                                'latitud': float(fila['latitud']),
+                                'longitud': float(fila['longitud'])
+                            })
+                
+                if not poligonos_result:
+                    # Si no hay polígonos pero hay productores, incluir todos como marcadores
+                    for productor in productores_cercanos:
+                        if 'latitud' in productor and 'longitud' in productor:
+                            poligonos_result.append({
+                                'coords': [],
+                                'cuit': productor['cuit'],
+                                'titular': productor['titular'],
+                                'latitud': float(productor['latitud']),
+                                'longitud': float(productor['longitud']),
+                                'es_marcador': True
+                            })
+        else:
+            # Si no se han calculado aún los productores cercanos, buscarlos ahora
+            lat, lon = st.session_state.punto_seleccionado
+            productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+            st.session_state.productores_cercanos = productores_cercanos
+            st.session_state.busqueda_realizada = True
+            
+            # Incluir polígonos y marcadores
             cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
             if 'poligono' in datos_productores.columns:
                 for idx, fila in datos_productores.iterrows():
@@ -322,6 +385,18 @@ with col1:
                                 'latitud': float(fila['latitud']),
                                 'longitud': float(fila['longitud'])
                             })
+            
+            # Si no hay polígonos, incluir marcadores
+            if not poligonos_result:
+                for productor in productores_cercanos:
+                    poligonos_result.append({
+                        'coords': [],
+                        'cuit': productor['cuit'],
+                        'titular': productor['titular'],
+                        'latitud': float(productor['latitud']),
+                        'longitud': float(productor['longitud']),
+                        'es_marcador': True
+                    })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -441,9 +516,14 @@ with col1:
                 markersLayer = L.layerGroup().addTo(map);
                 
                 // Dibujar polígonos solo si hay resultados de búsqueda
-                if (mostrarResultado && poligonos.length > 0) {{
-                    dibujarPoligonos();
-                    console.log(`Se dibujaron ${{poligonos.length}} polígonos`);
+                if (mostrarResultado) {{
+                    if (poligonos.length > 0) {{
+                        dibujarPoligonos();
+                        console.log(`Se dibujaron ${{poligonos.length}} polígonos/marcadores`);
+                    }}
+                    else {{
+                        console.log("No hay polígonos para dibujar, pero se muestra el punto seleccionado");
+                    }}
                 }}
                 
                 // Evento de clic en el mapa
@@ -485,12 +565,16 @@ with col1:
                 }}
             }}
             
-            // Función para dibujar polígonos
+            // Función para dibujar polígonos y marcadores
             function dibujarPoligonos() {{
                 polygonsLayer.clearLayers();
+                markersLayer.clearLayers();
+                
+                console.log("Dibujando poligonos y marcadores:", poligonos);
                 
                 poligonos.forEach(poligono => {{
                     if (poligono.coords && poligono.coords.length > 0) {{
+                        // Dibujar polígono
                         const polygon = L.polygon(poligono.coords, {{
                             color: '#3388ff',
                             weight: 2,
@@ -499,6 +583,19 @@ with col1:
                         }}).addTo(polygonsLayer);
                         
                         polygon.bindPopup(`
+                            <strong>CUIT:</strong> ${{poligono.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{poligono.titular}}<br>
+                            <button onclick="enviarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                Buscar este productor
+                            </button>
+                        `);
+                    }}
+                    
+                    // Siempre dibujar un marcador para cada productor
+                    if (poligono.latitud && poligono.longitud) {{
+                        L.marker([poligono.latitud, poligono.longitud], {{
+                            title: poligono.titular
+                        }}).addTo(markersLayer).bindPopup(`
                             <strong>CUIT:</strong> ${{poligono.cuit}}<br>
                             <strong>Razón Social:</strong> ${{poligono.titular}}<br>
                             <button onclick="enviarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
@@ -587,28 +684,6 @@ with col2:
             
             # Mostrar tabla
             st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
-            
-            # Mostrar detalles expandibles
-            for i, productor in enumerate(productores_cercanos[:10]):  # Limitar a los 10 más cercanos
-                titulo = f"{i+1}. {productor['titular']} ({productor['distancia']} km)"
-                if productor.get('contenedor', False):
-                    titulo += " - Contiene el punto"
-                    
-                with st.expander(titulo):
-                    st.markdown(f"""
-                    **CUIT:** {productor['cuit']}  
-                    **Razón Social:** {productor['titular']}  
-                    **RENSPA:** {productor.get('renspa', 'No disponible')}  
-                    **Localidad:** {productor.get('localidad', 'No disponible')}  
-                    **Superficie:** {productor.get('superficie', 'No disponible')} ha  
-                    **Distancia:** {productor['distancia']} km  
-                    **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
-                    **Tiene polígono:** {"Sí" if productor.get('poligono') else "No"}
-                    """)
-        else:
-            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
-    else:
-        st.info("Haz clic en el mapa para seleccionar un punto y buscar productores cercanos")
 
 # Instrucciones para usar el mapa
 st.markdown("---")
