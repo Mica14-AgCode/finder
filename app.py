@@ -1,47 +1,8 @@
-            // Función para mostrar productores como marcadores cuando no hay polígonos
-            function mostrarProductoresComoMarcadores() {{
-                // Crear marcadores para los productores
-                fetch(`${{window.location.pathname}}?get_productores=true`)
-                    .then(response => response.json())
-                    .then(data => {{
-                        console.log(`Mostrando ${{data.length}} productores como marcadores`);
-                        
-                        data.forEach(productor => {{
-                            if (productor.latitud && productor.longitud) {{
-                                L.marker([productor.latitud, productor.longitud], {{
-                                    title: productor.titular
-                                }}).addTo(map).bindPopup(`
-                                    <strong>CUIT:</strong> ${{productor.cuit}}<br>
-                                    <strong>Razón Social:</strong> ${{productor.titular}}<br>
-                                    <button onclick="buscarCoordenadas(${{productor.latitud}}, ${{productor.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                        Buscar este productor
-                                    </button>
-                                `);
-                            }}
-                        }});
-                    }})
-                    .catch(error => {{
-                        console.error("Error al cargar productores:", error);
-                        // Si falla la solicitud, creamos marcadores con los datos que tenemos
-                        poligonos.forEach(poligono => {{
-                            L.marker([poligono.latitud, poligono.longitud], {{
-                                title: poligono.titular
-                            }}).addTo(map).bindPopup(`
-                                <strong>CUIT:</strong> ${{poligono.cuit}}<br>
-                                <strong>Razón Social:</strong> ${{poligono.titular}}<br>
-                                <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                    Buscar este productor
-                                </button>
-                            `);
-                        }});
-                    }});
-            }}import streamlit as st
+import streamlit as st
 import pandas as pd
 import math
 import os
 import json
-import base64
-from urllib.parse import quote
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -294,7 +255,7 @@ datos_productores = cargar_datos()
 if not datos_productores.empty:
     st.success(f"Datos cargados correctamente: {len(datos_productores)} registros")
 
-# Si hay el parámetro get_productores en la URL, devolver los datos de los productores como JSON
+# Verificar si hay parámetros en la URL para buscar productores
 try:
     query_params = st.query_params
     if 'get_productores' in query_params:
@@ -360,6 +321,19 @@ with col1:
                         'longitud': float(fila['longitud'])
                     })
     
+    # Preparar datos de productores para mostrar como marcadores
+    productores_marcadores = []
+    for idx, fila in datos_productores.iterrows():
+        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+            productores_marcadores.append({
+                'cuit': fila['cuit'],
+                'titular': fila['titular'],
+                'latitud': float(fila['latitud']),
+                'longitud': float(fila['longitud']),
+                'renspa': fila.get('renspa', 'No disponible'),
+                'localidad': fila.get('localidad', 'No disponible')
+            })
+    
     # Para depuración
     if st.checkbox("Mostrar información de depuración"):
         st.write(f"Se encontraron {len(poligonos)} polígonos en los datos")
@@ -372,19 +346,6 @@ with col1:
                 if pd.notna(fila.get('poligono')):
                     st.code(str(fila['poligono'])[:200] + "..." if len(str(fila['poligono'])) > 200 else str(fila['poligono']))
                     break
-    
-    # Si no hay polígonos, preparar datos de productores para mostrar como marcadores
-    productores_marcadores = []
-    for idx, fila in datos_productores.iterrows():
-        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-            productores_marcadores.append({
-                'cuit': fila['cuit'],
-                'titular': fila['titular'],
-                'latitud': float(fila['latitud']),
-                'longitud': float(fila['longitud']),
-                'renspa': fila.get('renspa', 'No disponible'),
-                'localidad': fila.get('localidad', 'No disponible')
-            })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -451,10 +412,12 @@ with col1:
             let map;
             let selectedMarker = null;
             let polygonsLayer = null;
+            let markersLayer = null;
             let selectedCoords = null;
             
-            // Polígonos de los productores
+            // Datos para el mapa
             const poligonos = {json.dumps(poligonos)};
+            const productores = {json.dumps(productores_marcadores)};
             
             // Mostrar mensaje temporal
             function showMessage(message, duration = 3000) {{
@@ -471,6 +434,10 @@ with col1:
             document.addEventListener('DOMContentLoaded', initMap);
             
             function initMap() {{
+                console.log("Iniciando mapa...");
+                console.log("Número de polígonos:", poligonos.length);
+                console.log("Número de productores:", productores.length);
+                
                 // Crear el mapa
                 map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
                 
@@ -495,8 +462,9 @@ with col1:
                 
                 L.control.layers(baseMaps).addTo(map);
                 
-                // Capa para polígonos
+                // Capas para polígonos y marcadores
                 polygonsLayer = L.layerGroup().addTo(map);
+                markersLayer = L.layerGroup().addTo(map);
                 
                 // Dibujar polígonos si hay
                 if (poligonos.length > 0) {{
@@ -506,10 +474,8 @@ with col1:
                     console.log("No hay polígonos para dibujar");
                 }}
                 
-                // Si no hay polígonos, al menos mostramos marcadores para los productores
-                if (poligonos.length === 0) {{
-                    mostrarProductoresComoMarcadores();
-                }}
+                // Mostrar productores como marcadores
+                mostrarProductoresComoMarcadores();
                 
                 // Evento de clic en el mapa
                 map.on('click', function(e) {{
@@ -524,7 +490,9 @@ with col1:
                     if (selectedMarker) {{
                         map.removeLayer(selectedMarker);
                     }}
-                    selectedMarker = L.marker([lat, lng]).addTo(map);
+                    selectedMarker = L.marker([lat, lng], {{
+                        zIndexOffset: 1000  // Asegurar que esté encima de otros marcadores
+                    }}).addTo(map);
                     
                     // Ejecutar búsqueda automáticamente
                     buscarCoordenadas(lat, lng);
@@ -592,6 +560,30 @@ with col1:
                 }}
                 
                 return [sumX / coords.length, sumY / coords.length];
+            }}
+            
+            // Función para mostrar productores como marcadores
+            function mostrarProductoresComoMarcadores() {{
+                markersLayer.clearLayers();
+                
+                // Crear marcadores con los datos que tenemos directamente
+                productores.forEach(productor => {{
+                    if (productor.latitud && productor.longitud) {{
+                        L.marker([productor.latitud, productor.longitud], {{
+                            title: productor.titular
+                        }}).addTo(markersLayer).bindPopup(`
+                            <strong>CUIT:</strong> ${{productor.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{productor.titular}}<br>
+                            <strong>RENSPA:</strong> ${{productor.renspa}}<br>
+                            <strong>Localidad:</strong> ${{productor.localidad}}<br>
+                            <button onclick="buscarCoordenadas(${{productor.latitud}}, ${{productor.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                Buscar este productor
+                            </button>
+                        `);
+                    }}
+                }});
+                
+                console.log(`Se mostraron ${{productores.length}} productores como marcadores`);
             }}
             
             // Función para buscar en coordenadas
