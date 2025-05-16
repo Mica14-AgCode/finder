@@ -1,19 +1,18 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import math
+import os
+import json
 import folium
 from folium.plugins import Draw, Geocoder
 from streamlit_folium import st_folium
-import math
-from shapely.geometry import Point, Polygon
 import re
-import json
+from shapely.geometry import Point, Polygon
 import branca.colormap as cm
 
-# Configuración de página
+# Configuración de la página
 st.set_page_config(
-    page_title="Visor de Parcelas Agrícolas",
-    page_icon="🌱",
+    page_title="Visor de Productores Agrícolas", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,132 +29,248 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Título y descripción
-st.title("Visor de Parcelas Agrícolas")
+# Título de la aplicación
+st.title("Visor de Productores Agrícolas")
 st.markdown("""
 Este sistema permite visualizar parcelas agrícolas y buscar productores cercanos a un punto geográfico.
 Seleccione un punto en el mapa o ingrese coordenadas para encontrar parcelas cercanas.
 """)
 
-# Función para cargar datos
-@st.cache_data
-def load_data():
-    try:
-        df = pd.read_csv('data.csv')
-        # Asegurarse de que las coordenadas sean numéricas
-        df['latitud'] = pd.to_numeric(df['latitud'], errors='coerce')
-        df['longitud'] = pd.to_numeric(df['longitud'], errors='coerce')
-        
-        # Limpiar y formatear los datos de polígonos
-        df['poligono_formatted'] = df['poligono'].apply(format_polygon)
-        
-        # Eliminar filas con coordenadas nulas
-        df = df.dropna(subset=['latitud', 'longitud'])
-        return df
-    except Exception as e:
-        st.error(f"Error al cargar los datos: {str(e)}")
-        return pd.DataFrame()
+# Ruta al archivo CSV
+RUTA_CSV = "datos_productores.csv"
 
-# Función para formatear polígonos de formato personalizado a formato compatible con folium
-def format_polygon(polygon_str):
-    if not isinstance(polygon_str, str):
-        return None
-    
-    try:
-        # Extraer coordenadas del formato (lat,lon), (lat,lon), ...
-        coords_pattern = r'\(([^)]+)\)'
-        coords_matches = re.findall(coords_pattern, polygon_str)
-        
-        if not coords_matches:
-            return None
-        
-        coordinates = []
-        for coord_pair in coords_matches:
-            try:
-                lat, lon = map(float, coord_pair.split(','))
-                coordinates.append([lat, lon])  # Folium usa [lat, lon]
-            except:
-                continue
-        
-        return coordinates if coordinates else None
-    except:
-        return None
+# Inicializar variables de estado
+if 'punto_seleccionado' not in st.session_state:
+    st.session_state.punto_seleccionado = None
+if 'radio_busqueda' not in st.session_state:
+    st.session_state.radio_busqueda = 10.0
+if 'mostrar_resultado' not in st.session_state:
+    st.session_state.mostrar_resultado = False
+if 'lat' not in st.session_state:
+    st.session_state.lat = -36.0  # Centro aproximado de la región
+if 'lon' not in st.session_state:
+    st.session_state.lon = -62.0
+if 'search_results' not in st.session_state:
+    st.session_state.search_results = []
 
-# Función para calcular la distancia Haversine
-def haversine_distance(lat1, lon1, lat2, lon2):
-    # Radio de la Tierra en kilómetros
+# Funciones básicas
+def calcular_distancia_km(lat1, lon1, lat2, lon2):
+    """Calcula la distancia en kilómetros entre dos puntos usando la fórmula de Haversine"""
+    # Radio de la Tierra en km
     R = 6371.0
     
-    # Convertir grados a radianes
+    # Convertir coordenadas a radianes
     lat1_rad = math.radians(lat1)
     lon1_rad = math.radians(lon1)
     lat2_rad = math.radians(lat2)
     lon2_rad = math.radians(lon2)
     
-    # Diferencia de longitud y latitud
+    # Diferencias de latitud y longitud
     dlon = lon2_rad - lon1_rad
     dlat = lat2_rad - lat1_rad
     
     # Fórmula de Haversine
     a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    distance = R * c
+    distancia = R * c
     
-    return distance
+    return distancia
 
-# Función para verificar si un punto está dentro de un polígono
-def point_in_polygon(point, polygon):
+def formato_a_poligono(poligono_str):
+    """
+    Convertir el formato actual de polígonos (ya sea WKT o formato personalizado) 
+    a un formato que pueda usar Folium
+    """
+    if not poligono_str or not isinstance(poligono_str, str):
+        return None
+    
+    try:
+        # Primero verificar si es formato WKT
+        if poligono_str.strip().upper().startswith('POLYGON'):
+            # Extraer las coordenadas del polígono WKT
+            coords_str = poligono_str.replace('POLYGON', '').replace('((', '').replace('))', '').strip()
+            
+            # Separar las coordenadas por coma
+            coords_pares = coords_str.split(',')
+            
+            # Convertir a pares de [lat, lon] para Folium
+            coords = []
+            for par in coords_pares:
+                valores = par.strip().split()
+                if len(valores) >= 2:
+                    # En WKT es lon lat, pero en Folium necesitamos lat lon
+                    lon, lat = float(valores[0]), float(valores[1])
+                    coords.append([lat, lon])
+        else:
+            # Intentar formato alternativo como "(lat,lon), (lat,lon)..."
+            coords_pattern = r'\(([^)]+)\)'
+            coords_matches = re.findall(coords_pattern, poligono_str)
+            
+            if not coords_matches:
+                return None
+            
+            coords = []
+            for coord_pair in coords_matches:
+                try:
+                    lat, lon = map(float, coord_pair.split(','))
+                    coords.append([lat, lon])  # Folium usa [lat, lon]
+                except:
+                    continue
+        
+        return coords if coords else None
+    except Exception as e:
+        st.error(f"Error al procesar polígono: {str(e)}")
+        return None
+
+def punto_en_poligono(point, polygon):
+    """
+    Verifica si un punto está dentro de un polígono usando Shapely.
+    Point es una tupla (lon, lat) y polygon es una lista de coordenadas [[lat, lon], ...]
+    """
     if polygon is None or not polygon:
         return False
     
     try:
-        # Crear objeto Point de Shapely
+        # Crear objeto Point de Shapely (x=lon, y=lat)
         point_obj = Point(point)
         
+        # Convertir Folium polygon [lat, lon] a formato Shapely [lon, lat]
+        shapely_coords = [(coord[1], coord[0]) for coord in polygon]
+        
         # Crear objeto Polygon de Shapely
-        polygon_obj = Polygon(polygon)
+        polygon_obj = Polygon(shapely_coords)
         
         # Verificar si el punto está dentro del polígono
         return polygon_obj.contains(point_obj)
-    except:
+    except Exception as e:
+        st.error(f"Error al verificar punto en polígono: {str(e)}")
         return False
 
-# Función para buscar productores cercanos a un punto
-def find_nearby_producers(df, lat, lon, radius_km):
-    nearby = []
-    
-    for _, row in df.iterrows():
-        # Calcular distancia
-        dist = haversine_distance(lat, lon, row['latitud'], row['longitud'])
+def crear_datos_ejemplo():
+    """Crea datos de ejemplo cuando no se puede cargar el CSV"""
+    st.info("Usando datos de ejemplo para demostración")
+    return pd.DataFrame({
+        'cuit': ['20123456789', '30987654321', '33444555667', '27888999001'],
+        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2', 'Productor Ejemplo 3', 'Productor Ejemplo 4'],
+        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02', '11.222.3.33333/03', '44.555.6.66666/04'],
+        'localidad': ['Localidad 1', 'Localidad 2', 'Localidad 3', 'Localidad 4'],
+        'superficie': [100, 150, 200, 75],
+        'longitud': [-60.0, -60.2, -60.1, -59.9],
+        'latitud': [-34.0, -34.2, -34.1, -33.9],
+        'poligono': [
+            "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
+            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))",
+            "POLYGON((-60.1 -34.1, -60.2 -34.1, -60.2 -34.2, -60.1 -34.2, -60.1 -34.1))",
+            "POLYGON((-59.9 -33.9, -60.0 -33.9, -60.0 -34.0, -59.9 -34.0, -59.9 -33.9))"
+        ]
+    })
+
+@st.cache_data
+def cargar_datos(ruta_archivo=RUTA_CSV):
+    """Carga los datos de productores desde un archivo CSV"""
+    try:
+        # Verificar si el archivo existe
+        if not os.path.exists(ruta_archivo):
+            return crear_datos_ejemplo()
         
-        # Verificar si está dentro del radio
-        if dist <= radius_km:
-            # Verificar si el punto está dentro de algún polígono
-            inside_polygon = False
-            polygon = row['poligono_formatted']
-            if polygon:
-                inside_polygon = point_in_polygon((lon, lat), polygon)
+        # Cargar el CSV
+        df = pd.read_csv(ruta_archivo)
+        
+        # Verificar las columnas necesarias
+        columnas_requeridas = ['cuit', 'titular', 'latitud', 'longitud']
+        columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
+        
+        if columnas_faltantes:
+            return crear_datos_ejemplo()
+
+        # Asegurarse de que las coordenadas sean numéricas
+        df['latitud'] = pd.to_numeric(df['latitud'], errors='coerce')
+        df['longitud'] = pd.to_numeric(df['longitud'], errors='coerce')
+        
+        # Formatear los polígonos
+        if 'poligono' in df.columns:
+            df['poligono_formatted'] = df['poligono'].apply(formato_a_poligono)
+        
+        # Eliminar filas con coordenadas nulas
+        df = df.dropna(subset=['latitud', 'longitud'])
+        
+        return df
+    except Exception as e:
+        st.error(f"Error al cargar los datos: {str(e)}")
+        return crear_datos_ejemplo()
+
+def encontrar_productor_contenedor(lat, lon, datos):
+    """Encuentra el productor cuyo polígono contiene el punto dado"""
+    productor_contenedor = None
+    
+    if 'poligono_formatted' in datos.columns:
+        for idx, fila in datos.iterrows():
+            if pd.notna(fila['poligono_formatted']):
+                if punto_en_poligono((lon, lat), fila['poligono_formatted']):
+                    productor_contenedor = {
+                        'cuit': fila['cuit'],
+                        'titular': fila['titular'] if 'titular' in fila else 'No disponible',
+                        'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
+                        'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
+                        'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
+                        'distancia': 0,  # Distancia 0 porque está dentro del polígono
+                        'latitud': fila['latitud'],
+                        'longitud': fila['longitud'],
+                        'poligono_formatted': fila['poligono_formatted'],
+                        'dentro_poligono': True
+                    }
+                    break
+    
+    return productor_contenedor
+
+def encontrar_productores_cercanos(lat, lon, datos, radio_km=10):
+    """Encuentra productores cercanos a un punto dado dentro de un radio específico."""
+    cercanos = []
+    # Para agrupar por CUIT
+    cuits_encontrados = set()
+    
+    # Primero verificar si está dentro de algún polígono
+    productor_contenedor = encontrar_productor_contenedor(lat, lon, datos)
+    if productor_contenedor:
+        cercanos.append(productor_contenedor)
+        cuits_encontrados.add(productor_contenedor['cuit'])
+    
+    # Buscar otros productores cercanos por distancia
+    for idx, fila in datos.iterrows():
+        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+            # Si ya encontramos este CUIT, saltarlo
+            if fila['cuit'] in cuits_encontrados:
+                continue
+                
+            # Calcular distancia
+            distancia = calcular_distancia_km(
+                lat, lon, 
+                fila['latitud'], fila['longitud']
+            )
             
-            # Añadir a resultados
-            nearby.append({
-                'renspa': row['renspa'],
-                'titular': row['titular'],
-                'cuit': row['cuit'],
-                'localidad': row['localidad'],
-                'direccion': row['direccion'],
-                'superficie': row['superficie'],
-                'latitud': row['latitud'],
-                'longitud': row['longitud'],
-                'distancia_km': round(dist, 2),
-                'dentro_poligono': inside_polygon
-            })
+            if distancia <= radio_km:
+                # Agregar a resultado y marcar como encontrado
+                cercanos.append({
+                    'cuit': fila['cuit'],
+                    'titular': fila['titular'] if 'titular' in fila else 'No disponible',
+                    'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
+                    'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
+                    'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
+                    'distancia': round(distancia, 2),
+                    'latitud': fila['latitud'],
+                    'longitud': fila['longitud'],
+                    'poligono_formatted': fila.get('poligono_formatted', None),
+                    'dentro_poligono': False
+                })
+                cuits_encontrados.add(fila['cuit'])
     
     # Ordenar por distancia
-    nearby.sort(key=lambda x: x['distancia_km'])
-    return nearby
+    cercanos = sorted(cercanos, key=lambda x: x['distancia'])
+    
+    return cercanos
 
 # Función para crear mapa base
-def create_base_map(lat, lon, zoom=10):
+def crear_mapa_base(lat, lon, zoom=10):
     m = folium.Map(location=[lat, lon], zoom_start=zoom, tiles='CartoDB positron')
     
     # Añadir control de dibujo
@@ -175,13 +290,23 @@ def create_base_map(lat, lon, zoom=10):
     # Añadir buscador geocoder
     Geocoder().add_to(m)
     
+    # Añadir capas base adicionales
+    folium.TileLayer('CartoDB dark_matter', name='Dark Mode').add_to(m)
+    folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                   name='Satellite', attr='Esri').add_to(m)
+    folium.TileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
+                   name='Google Map', attr='Google').add_to(m)
+    
+    # Añadir control de capas
+    folium.LayerControl().add_to(m)
+    
     # Añadir escala
     folium.plugins.MeasureControl(position='bottomleft').add_to(m)
     
     return m
 
 # Función para visualizar resultados en el mapa
-def visualize_results(m, point, nearby_producers, show_polygons=True):
+def visualizar_resultados(m, point, resultados, radio_km):
     # Añadir marcador para el punto seleccionado
     folium.Marker(
         location=point,
@@ -192,7 +317,7 @@ def visualize_results(m, point, nearby_producers, show_polygons=True):
     # Añadir círculo para el radio de búsqueda
     folium.Circle(
         location=point,
-        radius=radius_km * 1000,  # Convertir a metros
+        radius=radio_km * 1000,  # Convertir a metros
         color="#2c6e49",
         fill=True,
         fill_opacity=0.1
@@ -201,48 +326,45 @@ def visualize_results(m, point, nearby_producers, show_polygons=True):
     # Crear mapa de colores para los polígonos según la distancia
     colormap = cm.LinearColormap(
         colors=['green', 'yellow', 'orange', 'red'],
-        index=[0, radius_km/3, 2*radius_km/3, radius_km],
+        index=[0, radio_km/3, 2*radio_km/3, radio_km],
         vmin=0,
-        vmax=radius_km
+        vmax=radio_km
     )
     
     # Añadir marcadores y polígonos para los productores cercanos
-    for producer in nearby_producers:
+    for productor in resultados:
         # Definir icono según si el punto está dentro del polígono
-        icon_color = "green" if producer['dentro_poligono'] else "blue"
-        icon_symbol = "check" if producer['dentro_poligono'] else "info"
+        icon_color = "green" if productor.get('dentro_poligono', False) else "blue"
+        icon_symbol = "check" if productor.get('dentro_poligono', False) else "info"
         
         # Añadir marcador
         folium.Marker(
-            location=[producer['latitud'], producer['longitud']],
+            location=[productor['latitud'], productor['longitud']],
             popup=folium.Popup(
                 f"""
-                <b>{producer['titular']}</b><br>
-                RENSPA: {producer['renspa']}<br>
-                CUIT: {producer['cuit']}<br>
-                Localidad: {producer['localidad']}<br>
-                Dirección: {producer['direccion']}<br>
-                Superficie: {producer['superficie']} ha<br>
-                Distancia: {producer['distancia_km']} km
+                <b>{productor['titular']}</b><br>
+                CUIT: {productor['cuit']}<br>
+                RENSPA: {productor.get('renspa', 'No disponible')}<br>
+                Localidad: {productor.get('localidad', 'No disponible')}<br>
+                Superficie: {productor.get('superficie', 'No disponible')} ha<br>
+                Distancia: {productor['distancia']} km
                 """,
                 max_width=300
             ),
             icon=folium.Icon(color=icon_color, icon=icon_symbol, prefix="fa"),
-            tooltip=f"{producer['titular']} - {producer['distancia_km']} km"
+            tooltip=f"{productor['titular']} - {productor['distancia']} km"
         ).add_to(m)
         
-        # Añadir polígono si está disponible y la opción está habilitada
-        if show_polygons and 'poligono_formatted' in df.columns:
-            polygon = df[df['renspa'] == producer['renspa']]['poligono_formatted'].iloc[0]
-            if polygon and len(polygon) > 2:  # Necesita al menos 3 puntos para un polígono
-                folium.Polygon(
-                    locations=polygon,
-                    popup=producer['titular'],
-                    color=colormap(producer['distancia_km']),
-                    fill=True,
-                    fill_opacity=0.4,
-                    weight=2
-                ).add_to(m)
+        # Añadir polígono si está disponible
+        if productor.get('poligono_formatted') and len(productor['poligono_formatted']) > 2:
+            folium.Polygon(
+                locations=productor['poligono_formatted'],
+                popup=productor['titular'],
+                color=colormap(productor['distancia']),
+                fill=True,
+                fill_opacity=0.4,
+                weight=2
+            ).add_to(m)
     
     # Añadir leyenda de colores
     colormap.caption = 'Distancia (km)'
@@ -250,39 +372,103 @@ def visualize_results(m, point, nearby_producers, show_polygons=True):
     
     return m
 
-# Inicializar estado de sesión si no existe
-if 'lat' not in st.session_state:
-    st.session_state.lat = -36.0  # Centro aproximado de la región
-if 'lon' not in st.session_state:
-    st.session_state.lon = -62.0
-if 'selected_point' not in st.session_state:
-    st.session_state.selected_point = None
-if 'search_results' not in st.session_state:
-    st.session_state.search_results = []
-
 # Cargar datos
-df = load_data()
+datos_productores = cargar_datos()
 
-# Crear columnas para el layout
-col1, col2 = st.columns([2, 1])
+# Si hay datos, mostrar información básica
+if not datos_productores.empty:
+    # Contar CUITs únicos
+    cuits_unicos = datos_productores['cuit'].nunique()
+    st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
+
+# Panel lateral
+with st.sidebar:
+    st.header("Configuración")
+    
+    # Radio de búsqueda
+    radio_busqueda = st.slider(
+        "Radio de búsqueda (km):",
+        min_value=1.0,
+        max_value=500.0,
+        value=st.session_state.radio_busqueda,
+        step=1.0
+    )
+    st.session_state.radio_busqueda = radio_busqueda
+    
+    # Control para mostrar/ocultar polígonos
+    mostrar_poligonos = st.checkbox("Mostrar polígonos", value=True)
+    
+    # Información del dataset
+    st.header("Información del Dataset")
+    if not datos_productores.empty:
+        st.write(f"Total de parcelas: {len(datos_productores)}")
+        st.write(f"Total de productores: {datos_productores['cuit'].nunique()}")
+        
+        if 'poligono_formatted' in datos_productores.columns:
+            poligonos_validos = datos_productores['poligono_formatted'].notna().sum()
+            st.write(f"Parcelas con polígonos: {poligonos_validos}")
+        
+        # Mostrar un mapa con todos los puntos
+        if st.checkbox("Ver mapa general"):
+            overview_map = folium.Map(location=[-36.0, -62.0], zoom_start=7, tiles='CartoDB positron')
+            
+            # Crear cluster de marcadores para mejorar rendimiento
+            marker_cluster = folium.plugins.MarkerCluster().add_to(overview_map)
+            
+            # Añadir marcadores para cada productor
+            for _, row in datos_productores.sample(min(500, len(datos_productores))).iterrows():  # Limitar a 500 para rendimiento
+                folium.Marker(
+                    location=[row['latitud'], row['longitud']],
+                    popup=row['titular'],
+                    icon=folium.Icon(color="blue", icon="info", prefix="fa")
+                ).add_to(marker_cluster)
+            
+            st.write("Vista general (muestra de 500 productores):")
+            st_folium(overview_map, width="100%", height=300)
+    
+    # Instrucciones
+    with st.expander("Instrucciones de uso"):
+        st.write("""
+        ### Cómo usar esta aplicación:
+        
+        1. **Seleccionar un punto**: Haga clic en el mapa o ingrese coordenadas manualmente.
+        2. **Ajustar radio**: Use el control deslizante para cambiar el radio de búsqueda.
+        3. **Ver resultados**: Los productores cercanos se muestran en el panel derecho.
+        4. **Visualización**: Los productores cuyas parcelas contienen el punto seleccionado se destacan en verde.
+        
+        ### Leyenda:
+        - 🔴 Punto seleccionado
+        - 🟢 Productor cuya parcela contiene el punto
+        - 🔵 Otros productores cercanos
+        - Polígonos coloreados según distancia (verde=cerca, rojo=lejos)
+        """)
+
+# Layout principal
+col1, col2 = st.columns([3, 1])
 
 with col1:
     st.subheader("Mapa Interactivo")
     
-    # Control para mostrar/ocultar polígonos
-    show_polygons = st.checkbox("Mostrar polígonos", value=True)
-    
-    # Control de radio de búsqueda
-    radius_km = st.slider(
-        "Radio de búsqueda (km):", 
-        min_value=1.0, 
-        max_value=50.0, 
-        value=10.0, 
-        step=1.0
-    )
-    
     # Crear mapa base
-    m = create_base_map(st.session_state.lat, st.session_state.lon)
+    m = crear_mapa_base(st.session_state.lat, st.session_state.lon)
+    
+    # Si hay un punto seleccionado y resultados, mostrar visualización
+    if st.session_state.punto_seleccionado and st.session_state.mostrar_resultado:
+        # Obtener resultados actualizados con el radio actual
+        lat, lon = st.session_state.punto_seleccionado
+        st.session_state.search_results = encontrar_productores_cercanos(
+            lat, lon, datos_productores, radio_km=radio_busqueda
+        )
+        
+        # Visualizar resultados en el mapa
+        if mostrar_poligonos:
+            m = visualizar_resultados(m, st.session_state.punto_seleccionado, 
+                                     st.session_state.search_results, radio_busqueda)
+        else:
+            # Si no mostramos polígonos, usamos el mismo mapa pero sin añadir polígonos
+            m = visualizar_resultados(m, st.session_state.punto_seleccionado, 
+                                     [p for p in st.session_state.search_results if True], 
+                                     radio_busqueda)
     
     # Mostrar el mapa y capturar interacciones
     map_data = st_folium(m, width="100%", height=500)
@@ -293,159 +479,129 @@ with col1:
         lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
         st.session_state.lat = lat
         st.session_state.lon = lon
-        st.session_state.selected_point = [lat, lon]
+        st.session_state.punto_seleccionado = [lat, lon]
         
         # Buscar productores cercanos
-        if not df.empty:
-            st.session_state.search_results = find_nearby_producers(df, lat, lon, radius_km)
-    
-    # Mostrar coordenadas actuales
-    if st.session_state.selected_point:
-        st.info(f"Punto seleccionado: Lat {st.session_state.lat:.6f}, Lon {st.session_state.lon:.6f}")
-
-with col2:
-    st.subheader("Buscar por Coordenadas")
-    
-    # Formulario para buscar por coordenadas
-    with st.form("coord_form"):
-        input_lat = st.number_input(
-            "Latitud:",
-            min_value=-90.0,
-            max_value=90.0,
-            value=st.session_state.lat,
-            format="%.6f"
-        )
-        
-        input_lon = st.number_input(
-            "Longitud:",
-            min_value=-180.0,
-            max_value=180.0,
-            value=st.session_state.lon,
-            format="%.6f"
-        )
-        
-        submitted = st.form_submit_button("Buscar")
-        
-        if submitted:
-            st.session_state.lat = input_lat
-            st.session_state.lon = input_lon
-            st.session_state.selected_point = [input_lat, input_lon]
+        if not datos_productores.empty:
+            st.session_state.search_results = encontrar_productores_cercanos(
+                lat, lon, datos_productores, radio_km=radio_busqueda
+            )
+            st.session_state.mostrar_resultado = True
             
-            # Buscar productores cercanos
-            if not df.empty:
-                st.session_state.search_results = find_nearby_producers(df, input_lat, input_lon, radius_km)
-            
-            # Indicar que se debe recargar la página
+            # Recargar la página para mostrar los resultados
+            # Usando st.rerun() en lugar de experimental_rerun
             st.rerun()
     
-    # Mostrar resultados
-    st.subheader("Resultados")
+    # Mostrar coordenadas actuales
+    if st.session_state.punto_seleccionado:
+        st.info(f"Punto seleccionado: Lat {st.session_state.punto_seleccionado[0]:.6f}, Lon {st.session_state.punto_seleccionado[1]:.6f}")
     
-    if st.session_state.search_results:
-        st.write(f"Se encontraron {len(st.session_state.search_results)} productores cercanos:")
-        
-        # Verificar si hay algún productor cuyo polígono contiene el punto
-        inside_polygon_producers = [p for p in st.session_state.search_results if p['dentro_poligono']]
-        
-        if inside_polygon_producers:
-            st.success(f"¡El punto seleccionado está dentro de {len(inside_polygon_producers)} parcela(s)!")
+    # Formulario para entrada manual de coordenadas
+    with st.expander("Buscar por coordenadas"):
+        with st.form("coord_form"):
+            col_lat, col_lon = st.columns(2)
             
-            # Mostrar los productores cuya parcela contiene el punto
-            for i, producer in enumerate(inside_polygon_producers):
-                with st.expander(f"🌱 {producer['titular']} (Parcela Contenedora)", expanded=True):
-                    st.write(f"**RENSPA:** {producer['renspa']}")
-                    st.write(f"**CUIT:** {producer['cuit']}")
-                    st.write(f"**Localidad:** {producer['localidad']}")
-                    st.write(f"**Dirección:** {producer['direccion']}")
-                    st.write(f"**Superficie:** {producer['superficie']} ha")
-                    st.write(f"**Distancia al punto:** {producer['distancia_km']} km")
-        
-        # Mostrar otros productores cercanos
-        other_producers = [p for p in st.session_state.search_results if not p['dentro_poligono']]
-        
-        if other_producers:
-            st.write("#### Otros productores cercanos:")
+            with col_lat:
+                input_lat = st.number_input(
+                    "Latitud:",
+                    min_value=-90.0,
+                    max_value=90.0,
+                    value=st.session_state.lat if st.session_state.punto_seleccionado else -36.0,
+                    format="%.6f"
+                )
             
-            for i, producer in enumerate(other_producers):
-                with st.expander(f"📍 {producer['titular']} - {producer['distancia_km']} km"):
-                    st.write(f"**RENSPA:** {producer['renspa']}")
-                    st.write(f"**CUIT:** {producer['cuit']}")
-                    st.write(f"**Localidad:** {producer['localidad']}")
-                    st.write(f"**Dirección:** {producer['direccion']}")
-                    st.write(f"**Superficie:** {producer['superficie']} ha")
-    else:
-        if st.session_state.selected_point:
-            st.info("No se encontraron productores en el radio especificado.")
+            with col_lon:
+                input_lon = st.number_input(
+                    "Longitud:",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    value=st.session_state.lon if st.session_state.punto_seleccionado else -62.0,
+                    format="%.6f"
+                )
+            
+            buscar_submitted = st.form_submit_button("Buscar en estas coordenadas")
+            
+            if buscar_submitted:
+                st.session_state.lat = input_lat
+                st.session_state.lon = input_lon
+                st.session_state.punto_seleccionado = [input_lat, input_lon]
+                
+                # Buscar productores cercanos
+                if not datos_productores.empty:
+                    st.session_state.search_results = encontrar_productores_cercanos(
+                        input_lat, input_lon, datos_productores, radio_km=radio_busqueda
+                    )
+                    st.session_state.mostrar_resultado = True
+                
+                # Recargar la página
+                st.rerun()
+
+with col2:
+    st.subheader("Resultados de la búsqueda")
+    
+    # Mostrar resultados si tenemos un punto seleccionado
+    if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
+        lat, lon = st.session_state.punto_seleccionado
+        
+        if st.session_state.search_results:
+            # Contar razones sociales únicas
+            cuits_unicos = len(set(productor['cuit'] for productor in st.session_state.search_results))
+            st.success(f"Se encontraron {cuits_unicos} productores en un radio de {radio_busqueda} km")
+            
+            # Verificar si hay productores cuyo polígono contiene el punto
+            productores_contenedores = [p for p in st.session_state.search_results if p.get('dentro_poligono', False)]
+            
+            if productores_contenedores:
+                st.subheader("Parcela que contiene este punto:")
+                
+                for productor in productores_contenedores:
+                    with st.expander(f"🌱 {productor['titular']}", expanded=True):
+                        st.markdown(f"""
+                        **CUIT:** {productor['cuit']}  
+                        **Razón Social:** {productor['titular']}  
+                        **RENSPA:** {productor.get('renspa', 'No disponible')}  
+                        **Localidad:** {productor.get('localidad', 'No disponible')}  
+                        **Superficie:** {productor.get('superficie', 'No disponible')} ha  
+                        **Distancia:** {productor['distancia']} km  
+                        **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
+                        """)
+            
+            # Mostrar otros productores cercanos
+            other_productores = [p for p in st.session_state.search_results if not p.get('dentro_poligono', False)]
+            
+            if other_productores:
+                st.subheader("Otros productores cercanos:")
+                
+                # Crear un DataFrame para la tabla
+                tabla_data = []
+                for productor in other_productores:
+                    tabla_data.append({
+                        "CUIT": productor['cuit'],
+                        "Razón Social": productor['titular'],
+                        "Distancia (km)": productor['distancia'],
+                        "Localidad": productor.get('localidad', ''),
+                    })
+                
+                # Mostrar tabla
+                st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
+                
+                # Mostrar detalles expandibles para los más cercanos
+                for i, productor in enumerate(other_productores[:10]):  # Limitar a los 10 más cercanos
+                    with st.expander(f"📍 {productor['titular']} - {productor['distancia']} km"):
+                        st.markdown(f"""
+                        **CUIT:** {productor['cuit']}  
+                        **Razón Social:** {productor['titular']}  
+                        **RENSPA:** {productor.get('renspa', 'No disponible')}  
+                        **Localidad:** {productor.get('localidad', 'No disponible')}  
+                        **Superficie:** {productor.get('superficie', 'No disponible')} ha  
+                        **Distancia:** {productor['distancia']} km  
+                        **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
+                        """)
         else:
-            st.info("Seleccione un punto en el mapa o ingrese coordenadas para buscar.")
-
-# Si hay un punto seleccionado y resultados, mostrar visualización
-if st.session_state.selected_point and st.session_state.search_results:
-    st.subheader("Visualización de Resultados")
-    
-    # Crear mapa con resultados
-    result_map = create_base_map(st.session_state.lat, st.session_state.lon, zoom=12)
-    result_map = visualize_results(
-        result_map, 
-        st.session_state.selected_point,
-        st.session_state.search_results,
-        show_polygons
-    )
-    
-    # Mostrar mapa de resultados
-    st_folium(result_map, width="100%", height=500)
-
-# Mostrar información del dataset
-st.sidebar.header("Información del Dataset")
-if not df.empty:
-    st.sidebar.write(f"Total de productores: {len(df)}")
-    st.sidebar.write(f"Productores con polígonos: {df['poligono_formatted'].notna().sum()}")
-    
-    # Mostrar un mapa con todos los puntos
-    if st.sidebar.checkbox("Ver mapa general"):
-        overview_map = folium.Map(location=[-36.0, -62.0], zoom_start=7, tiles='CartoDB positron')
-        
-        # Crear cluster de marcadores para mejorar rendimiento
-        marker_cluster = folium.plugins.MarkerCluster().add_to(overview_map)
-        
-        # Añadir marcadores para cada productor
-        for _, row in df.sample(min(500, len(df))).iterrows():  # Limitar a 500 para rendimiento
-            folium.Marker(
-                location=[row['latitud'], row['longitud']],
-                popup=row['titular'],
-                icon=folium.Icon(color="blue", icon="info", prefix="fa")
-            ).add_to(marker_cluster)
-        
-        st.sidebar.write("Vista general (muestra de 500 productores):")
-        st_folium(overview_map, width="100%", height=300)
-    
-    # Lista de localidades
-    localities = df['localidad'].dropna().unique()
-    st.sidebar.write(f"Localidades registradas: {len(localities)}")
-    
-    if st.sidebar.checkbox("Ver lista de localidades"):
-        st.sidebar.write(", ".join(sorted(localities)))
-else:
-    st.sidebar.error("No se pudieron cargar los datos.")
-
-# Información de ayuda
-with st.sidebar.expander("Ayuda"):
-    st.write("""
-    ### Cómo usar esta aplicación:
-    
-    1. **Seleccionar un punto**: Haga clic en el mapa o ingrese coordenadas manualmente.
-    2. **Ajustar radio**: Use el control deslizante para cambiar el radio de búsqueda.
-    3. **Ver resultados**: Los productores cercanos se muestran en el panel derecho.
-    4. **Visualización**: Los productores cuyas parcelas contienen el punto seleccionado se destacan en verde.
-    
-    ### Leyenda:
-    - 🔴 Punto seleccionado
-    - 🟢 Productor cuya parcela contiene el punto
-    - 🔵 Otros productores cercanos
-    - Polígonos coloreados según distancia (verde=cerca, rojo=lejos)
-    """)
+            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
+    else:
+        st.info("Haz clic en el mapa para seleccionar un punto y buscar productores cercanos")
 
 # Pie de página
-st.sidebar.markdown("---")
-st.sidebar.markdown("Desarrollado con ❤️ para agricultores")
-st.sidebar.markdown("Versión 1.0.0")
+st.markdown("---")
+st.markdown("Desarrollado con ❤️ para productores agrícolas")
