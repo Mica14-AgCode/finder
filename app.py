@@ -25,6 +25,8 @@ if 'radio_busqueda' not in st.session_state:
     st.session_state.radio_busqueda = 5.0
 if 'mostrar_resultados' not in st.session_state:
     st.session_state.mostrar_resultados = False
+if 'poligono_seleccionado' not in st.session_state:
+    st.session_state.poligono_seleccionado = None
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -333,6 +335,7 @@ with col1:
                 font-size: 16px;
                 box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                 transition: all 0.3s;
+                z-index: 1001;
             }}
             #use-coords-btn:hover {{
                 background-color: #45a049;
@@ -386,7 +389,7 @@ with col1:
                 font-family: monospace;
                 padding: 10px;
                 overflow: auto;
-                z-index: 1000;
+                z-index: 999;
                 display: none;
             }}
         </style>
@@ -413,7 +416,7 @@ with col1:
         
         <script>
             // Función para agregar logs (ayuda en depuración)
-            const DEBUG = true;
+            const DEBUG = false; // Desactivar el modo depuración para que no aparezca el panel negro
             const logPanel = document.getElementById('log-panel');
             
             function log(message) {{
@@ -569,6 +572,9 @@ with col1:
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
             
+            // Variable para el polígono seleccionado
+            let poligonoSeleccionado = null;
+            
             // Colección de polígonos para los productores
             const poligonosLayer = L.layerGroup().addTo(map);
             
@@ -603,11 +609,58 @@ with col1:
                         // Agregar popup con información
                         poly.bindPopup(`
                             <strong>CUIT:</strong> ${{poligono.cuit}}<br>
-                            <strong>Razón Social:</strong> ${{poligono.titular}}
+                            <strong>Razón Social:</strong> ${{poligono.titular}}<br>
+                            <button id="seleccionar-poligono-${{poligono.idx}}" 
+                                    style="background-color:#4CAF50; color:white; border:none; 
+                                    padding:5px 10px; border-radius:4px; cursor:pointer; margin-top:5px">
+                                Seleccionar este polígono
+                            </button>
                         `);
                         
-                        // Guardar el índice para identificar el polígono
+                        // Guardar el índice y datos para identificar el polígono
                         poly.idx = poligono.idx;
+                        poly.poligonoData = poligono;
+                        
+                        // Agregar evento cuando se cierra el popup
+                        poly.on('popupopen', function(e) {{
+                            setTimeout(() => {{
+                                const botonSeleccionar = document.getElementById(`seleccionar-poligono-${{poligono.idx}}`);
+                                if (botonSeleccionar) {{
+                                    botonSeleccionar.addEventListener('click', function() {{
+                                        // Resetear estilos de todos los polígonos
+                                        poligonosLayer.eachLayer(layer => {{
+                                            if (layer instanceof L.Polygon) {{
+                                                layer.setStyle({{ 
+                                                    color: colors[0], 
+                                                    fillOpacity: 0.2, 
+                                                    weight: 2 
+                                                }});
+                                            }}
+                                        }});
+                                        
+                                        // Resaltar el polígono seleccionado
+                                        poly.setStyle({{ 
+                                            color: '#FF4500', 
+                                            fillColor: '#FF4500',
+                                            fillOpacity: 0.4, 
+                                            weight: 4
+                                        }});
+                                        
+                                        // Guardar el polígono seleccionado
+                                        poligonoSeleccionado = poly;
+                                        
+                                        // Actualizar las coordenadas seleccionadas con el centroide del polígono
+                                        const bounds = poly.getBounds();
+                                        const center = bounds.getCenter();
+                                        document.getElementById('selected-lat').textContent = center.lat.toFixed(4);
+                                        document.getElementById('selected-lng').textContent = center.lng.toFixed(4);
+                                        
+                                        // Cerrar el popup
+                                        poly.closePopup();
+                                    }});
+                                }}
+                            }}, 100);
+                        }});
                         
                         // Agregar el polígono a la capa
                         poly.addTo(poligonosLayer);
@@ -697,6 +750,16 @@ with col1:
                         shadowSize: [41, 41]
                     }})
                 }}).addTo(map);
+                
+                // Deseleccionar cualquier polígono seleccionado anteriormente
+                if (poligonoSeleccionado) {{
+                    poligonoSeleccionado.setStyle({{ 
+                        color: colors[0], 
+                        fillOpacity: 0.2, 
+                        weight: 2 
+                    }});
+                    poligonoSeleccionado = null;
+                }}
             }});
             
             // Evento para el botón de usar coordenadas
@@ -757,9 +820,57 @@ with col1:
                                 }};
                             }},
                             onEachFeature: function(feature, layer) {{
+                                let popupContent = '<div>';
+                                
                                 if (feature.properties && feature.properties.name) {{
-                                    layer.bindPopup(feature.properties.name);
+                                    popupContent += `<strong>Nombre:</strong> ${{feature.properties.name}}<br>`;
                                 }}
+                                
+                                if (feature.properties && feature.properties.description) {{
+                                    popupContent += `<strong>Descripción:</strong> ${{feature.properties.description}}<br>`;
+                                }}
+                                
+                                // Botón para seleccionar este polígono
+                                popupContent += `<button id="seleccionar-archivo-poligono" 
+                                                style="background-color:#4CAF50; color:white; border:none; 
+                                                padding:5px 10px; border-radius:4px; cursor:pointer; margin-top:5px">
+                                            Usar este polígono como referencia
+                                        </button>`;
+                                
+                                popupContent += '</div>';
+                                
+                                layer.bindPopup(popupContent);
+                                
+                                // Agregar evento cuando se abre el popup
+                                layer.on('popupopen', function(e) {{
+                                    setTimeout(() => {{
+                                        const botonSeleccionar = document.getElementById('seleccionar-archivo-poligono');
+                                        if (botonSeleccionar) {{
+                                            botonSeleccionar.addEventListener('click', function() {{
+                                                // Obtener el centro del polígono
+                                                const bounds = layer.getBounds();
+                                                const center = bounds.getCenter();
+                                                
+                                                // Actualizar las coordenadas seleccionadas
+                                                document.getElementById('selected-lat').textContent = center.lat.toFixed(4);
+                                                document.getElementById('selected-lng').textContent = center.lng.toFixed(4);
+                                                
+                                                // Resaltar este polígono
+                                                if (layer.setStyle) {{
+                                                    layer.setStyle({{
+                                                        color: '#FF4500',
+                                                        fillColor: '#FF4500',
+                                                        fillOpacity: 0.4,
+                                                        weight: 4
+                                                    }});
+                                                }}
+                                                
+                                                // Cerrar el popup
+                                                layer.closePopup();
+                                            }});
+                                        }}
+                                    }}, 100);
+                                }});
                             }}
                         }}).addTo(archivosLayer);
                         
@@ -805,15 +916,58 @@ with col1:
                                     }},
                                     onEachFeature: function(feature, layer) {{
                                         // Crear popup con propiedades
+                                        let popupContent = '<div>';
+                                        
                                         if (feature.properties) {{
-                                            let popupContent = '<div>';
                                             for (const key in feature.properties) {{
                                                 const value = feature.properties[key];
-                                                popupContent += `<b>${{key}}:</b> ${{value}}<br>`;
+                                                if (value !== null && value !== undefined) {{
+                                                    popupContent += `<strong>${{key}}:</strong> ${{value}}<br>`;
+                                                }}
                                             }}
-                                            popupContent += '</div>';
-                                            layer.bindPopup(popupContent);
                                         }}
+                                        
+                                        // Botón para seleccionar este polígono
+                                        popupContent += `<button id="seleccionar-archivo-poligono" 
+                                                        style="background-color:#4CAF50; color:white; border:none; 
+                                                        padding:5px 10px; border-radius:4px; cursor:pointer; margin-top:5px">
+                                                    Usar este polígono como referencia
+                                                </button>`;
+                                        
+                                        popupContent += '</div>';
+                                        
+                                        layer.bindPopup(popupContent);
+                                        
+                                        // Agregar evento cuando se abre el popup
+                                        layer.on('popupopen', function(e) {{
+                                            setTimeout(() => {{
+                                                const botonSeleccionar = document.getElementById('seleccionar-archivo-poligono');
+                                                if (botonSeleccionar) {{
+                                                    botonSeleccionar.addEventListener('click', function() {{
+                                                        // Obtener el centro del polígono
+                                                        const bounds = layer.getBounds();
+                                                        const center = bounds.getCenter();
+                                                        
+                                                        // Actualizar las coordenadas seleccionadas
+                                                        document.getElementById('selected-lat').textContent = center.lat.toFixed(4);
+                                                        document.getElementById('selected-lng').textContent = center.lng.toFixed(4);
+                                                        
+                                                        // Resaltar este polígono
+                                                        if (layer.setStyle) {{
+                                                            layer.setStyle({{
+                                                                color: '#FF4500',
+                                                                fillColor: '#FF4500',
+                                                                fillOpacity: 0.4,
+                                                                weight: 4
+                                                            }});
+                                                        }}
+                                                        
+                                                        // Cerrar el popup
+                                                        layer.closePopup();
+                                                    }});
+                                                }}
+                                            }}, 100);
+                                        }});
                                     }}
                                 }}).addTo(archivosLayer);
                                 
@@ -827,11 +981,13 @@ with col1:
                                 }}
                             }})
                             .catch(function(error) {{
-                                log(`Error al procesar Shapefile: ${{error.message}}`);
+                                console.error(`Error al procesar Shapefile: ${{error.message}}`);
+                                alert(`Error al procesar el archivo Shapefile: ${{error.message}}`);
                             }});
                     }}
                 }} catch (error) {{
-                    log(`Error al cargar archivo: ${{error.message}}`);
+                    console.error(`Error al cargar archivo: ${{error.message}}`);
+                    alert(`Error al cargar el archivo: ${{error.message}}`);
                 }}
             }}
             
@@ -879,6 +1035,30 @@ with col1:
                     type: 'busqueda_realizada'
                 }}, '*');
             }}
+            
+            // Escuchar mensajes para colorear polígonos
+            window.addEventListener('message', function(event) {{
+                if (event.data && event.data.type === 'cercanos') {{
+                    log('Mensaje recibido para colorear polígonos cercanos');
+                    
+                    // Colorear polígonos cercanos
+                    if (event.data.cercanos && event.data.cercanos.length > 0) {{
+                        colorearPoligonosCercanos(event.data.cercanos);
+                    }}
+                    
+                    // Colorear el polígono más cercano
+                    if (event.data.masCercano) {{
+                        colorearPoligonoMasCercano(event.data.masCercano);
+                        
+                        // Hacer zoom al polígono más cercano si existe
+                        poligonosLayer.eachLayer(layer => {{
+                            if (layer instanceof L.Polygon && layer.idx === event.data.masCercano.idx) {{
+                                map.fitBounds(layer.getBounds());
+                            }}
+                        }});
+                    }}
+                }}
+            }});
         </script>
         """
         
@@ -956,7 +1136,7 @@ with col2:
             st.dataframe(pd.DataFrame(tabla_datos), use_container_width=True)
             
             # Detalles expandibles
-            for i, cercano in enumerate(cuits_cercanos[:5]):  # Mostrar los 5 más cercanos
+            for i, cercano in enumerate(cuits_cercanos[:10]):  # Mostrar los 10 más cercanos
                 with st.expander(f"{i+1}. {cercano['titular']} ({cercano['distancia']} km)"):
                     st.markdown(f"""
                     **CUIT:** {cercano['cuit']}  
@@ -978,9 +1158,10 @@ st.subheader("Instrucciones de uso")
 st.markdown("""
 1. **Buscar localidad**: Usa la barra de búsqueda en la parte superior izquierda del mapa.
 2. **Selección en mapa**: Haz clic en cualquier punto del mapa.
-3. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
-4. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
-5. **Filtros**: Usa el filtro por Razón Social para mostrar productores específicos.
-6. **Radio de búsqueda**: Ingresa directamente el radio de búsqueda deseado (en kilómetros).
-7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral para visualizarlos en el mapa.
+3. **Selección de polígonos**: Puedes seleccionar polígonos (tanto los cargados desde CSV como desde archivos KML/SHP) haciendo clic en ellos y usando el botón en su popup.
+4. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
+5. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
+6. **Filtros**: Usa el filtro por Razón Social para mostrar productores específicos.
+7. **Radio de búsqueda**: Ingresa directamente el radio de búsqueda deseado (en kilómetros).
+8. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral para visualizarlos en el mapa.
 """)
