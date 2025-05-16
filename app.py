@@ -1,9 +1,6 @@
 import streamlit as st
 import pandas as pd
-import folium
-from streamlit_folium import folium_static, st_folium
 import math
-import json
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -37,30 +34,6 @@ def calcular_distancia_km(lat1, lon1, lat2, lon2):
     
     return distancia
 
-# Función para crear polígono desde WKT
-def wkt_a_coordenadas(wkt_str):
-    """Convierte un string WKT de polígono a una lista de coordenadas [lat, lon]"""
-    if not wkt_str or not isinstance(wkt_str, str):
-        return None
-    
-    try:
-        # Extraer las coordenadas del formato WKT POLYGON
-        coords_str = wkt_str.replace('POLYGON', '').replace('((', '').replace('))', '').strip()
-        
-        # Separar las coordenadas por coma
-        coords_pairs = coords_str.split(',')
-        
-        # Convertir a pares de [lat, lon] (folium usa lat, lon en este orden)
-        coords = []
-        for pair in coords_pairs:
-            lon, lat = map(float, pair.strip().split())
-            coords.append([lat, lon])  # Invertido para folium
-        
-        return coords
-    except Exception as e:
-        st.warning(f"Error al convertir polígono WKT: {e}")
-        return None
-
 # Función para cargar y procesar los datos
 @st.cache_data
 def cargar_datos(ruta_archivo=RUTA_CSV):
@@ -68,11 +41,6 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
     try:
         # Cargar el CSV
         df = pd.read_csv(ruta_archivo)
-        
-        # Procesar polígonos si existen
-        if 'poligono' in df.columns:
-            df['coords'] = df['poligono'].apply(wkt_a_coordenadas)
-        
         return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
@@ -109,7 +77,8 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
                     'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
                     'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
                     'distancia': round(distancia, 2),
-                    'coords': fila.get('coords')
+                    'latitud': fila['latitud'],
+                    'longitud': fila['longitud']
                 }
     
     return cuit_cercano
@@ -137,7 +106,8 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
                     'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
                     'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
                     'distancia': round(distancia, 2),
-                    'coords': fila.get('coords')
+                    'latitud': fila['latitud'],
+                    'longitud': fila['longitud']
                 })
     
     # Ordenar por distancia
@@ -154,7 +124,6 @@ with st.sidebar:
     1. Llamarse '{RUTA_CSV}'
     2. Estar en la misma carpeta que esta aplicación
     3. Contener al menos las columnas: 'cuit', 'titular', 'latitud', 'longitud'
-    4. Opcionalmente: 'poligono' en formato WKT para visualizar los campos
     """)
 
 # Cargar datos
@@ -192,97 +161,32 @@ radio_busqueda = st.sidebar.slider(
     step=0.5
 )
 
-# Determinar el centro del mapa
-if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
-    centro_mapa = [
-        datos_filtrados['latitud'].mean(),
-        datos_filtrados['longitud'].mean()
-    ]
-else:
-    # Valores por defecto (centro de Argentina)
-    centro_mapa = [-34.603722, -58.381592]
-
-# Crear el mapa con folium
-m = folium.Map(location=centro_mapa, zoom_start=7)
-
-# Agregar capa base de satélite
-folium.TileLayer(
-    tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr='Esri',
-    name='Satélite',
-    overlay=False
-).add_to(m)
-
-# Agregar los marcadores/polígonos de los campos al mapa
-for idx, fila in datos_filtrados.iterrows():
-    try:
-        # Información para el popup
-        cuit = fila['cuit']
-        titular = fila['titular'] if 'titular' in fila else 'No disponible'
-        renspa = fila['renspa'] if 'renspa' in fila else 'No disponible'
-        superficie = fila['superficie'] if 'superficie' in fila else 'No disponible'
-        localidad = fila['localidad'] if 'localidad' in fila else 'No disponible'
-        
-        # Contenido del popup
-        popup_content = f"""
-        <b>CUIT:</b> {cuit}<br>
-        <b>Titular:</b> {titular}<br>
-        <b>RENSPA:</b> {renspa}<br>
-        <b>Superficie:</b> {superficie} ha<br>
-        <b>Localidad:</b> {localidad}
-        """
-        
-        # Si tiene polígono, agregar al mapa
-        if 'coords' in fila and fila['coords'] is not None:
-            folium.Polygon(
-                locations=fila['coords'],
-                popup=folium.Popup(popup_content, max_width=300),
-                tooltip=f"CUIT: {cuit}",
-                color='blue',
-                fill=True,
-                fill_opacity=0.2
-            ).add_to(m)
-        # Si no tiene polígono pero tiene coordenadas, agregar un marcador
-        elif pd.notna(fila.get('latitud')) and pd.notna(fila.get('longitud')):
-            folium.Marker(
-                location=[fila['latitud'], fila['longitud']],
-                popup=folium.Popup(popup_content, max_width=300),
-                tooltip=f"CUIT: {cuit}",
-                icon=folium.Icon(color='blue', icon='info-sign')
-            ).add_to(m)
-    except Exception as e:
-        st.warning(f"Error al agregar elemento al mapa: {e}")
-        continue
-
-# Agregar control de capas
-folium.LayerControl().add_to(m)
-
-# Contenedor para mostrar el mapa y resultados
+# Contenedor para mostrar el mapa y las coordenadas
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.subheader("Mapa Interactivo")
+    st.subheader("Mapa de Productores")
     
-    # Mensaje instructivo
-    st.info("Haz clic en el mapa para seleccionar una ubicación y ver los productores cercanos.")
-    
-    # Renderizar el mapa interactivo y capturar eventos de clic
-    map_data = st_folium(m, width=800, height=500)
-    
-    # Procesar el clic en el mapa
-    if map_data and map_data.get("last_clicked"):
-        clicked_lat = map_data["last_clicked"]["lat"]
-        clicked_lng = map_data["last_clicked"]["lng"]
+    # Verificar que existan coordenadas para mostrar en el mapa
+    if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
+        # Preparar datos para el mapa
+        # st.map espera un DataFrame con columnas 'latitude' y 'longitude'
+        mapa_df = datos_filtrados[['latitud', 'longitud']].copy()
+        mapa_df.columns = ['latitude', 'longitude']  # Renombrar para st.map
         
-        # Guardar las coordenadas en session_state
-        st.session_state.punto_seleccionado = (clicked_lat, clicked_lng)
-        st.session_state.busqueda_realizada = True
+        # Mostrar el mapa con los puntos
+        st.map(mapa_df)
         
-        # Mostrar las coordenadas seleccionadas
-        st.success(f"Ubicación seleccionada: Lat {clicked_lat:.6f}, Lng {clicked_lng:.6f}")
+        # Nota informativa sobre el mapa
+        st.info("""
+        Este mapa muestra las ubicaciones de los productores. 
+        Para consultar un punto específico, ingresa las coordenadas manualmente a continuación.
+        """)
+    else:
+        st.warning("No hay coordenadas disponibles para mostrar en el mapa.")
     
-    # Opción alternativa para ingresar coordenadas manualmente
-    st.subheader("O ingresa coordenadas manualmente")
+    # Campos para ingresar coordenadas manualmente
+    st.subheader("Ingresar coordenadas para consulta")
     col_lat, col_lon = st.columns(2)
     with col_lat:
         latitud = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
@@ -292,6 +196,9 @@ with col1:
     if st.button("Buscar en estas coordenadas"):
         st.session_state.punto_seleccionado = (latitud, longitud)
         st.session_state.busqueda_realizada = True
+        
+        # Mostrar un mensaje con las coordenadas seleccionadas
+        st.success(f"Buscando en: Latitud {latitud}, Longitud {longitud}")
 
 with col2:
     st.subheader("Resultados de la búsqueda")
@@ -313,6 +220,14 @@ with col2:
             **Superficie:** {cuit_mas_cercano.get('superficie', 'No disponible')} ha  
             **Distancia:** {cuit_mas_cercano['distancia']} km  
             """)
+            
+            # Mostrar el punto más cercano en un mapa pequeño
+            st.subheader("Ubicación del productor más cercano:")
+            punto_cercano_df = pd.DataFrame({
+                'latitude': [cuit_mas_cercano['latitud']],
+                'longitude': [cuit_mas_cercano['longitud']]
+            })
+            st.map(punto_cercano_df)
         
         # Buscar CUITs cercanos
         cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
@@ -322,6 +237,16 @@ with col2:
             
             # Mostrar cuántos productores se encontraron
             st.info(f"Se encontraron {len(cuits_cercanos)} productores en el radio especificado.")
+            
+            # Crear un DataFrame para mostrar en el mapa
+            if len(cuits_cercanos) > 0:
+                cercanos_df = pd.DataFrame([{
+                    'latitude': c['latitud'],
+                    'longitude': c['longitud']
+                } for c in cuits_cercanos])
+                
+                st.subheader("Mapa de productores cercanos:")
+                st.map(cercanos_df)
             
             # Mostrar los productores cercanos
             for i, cercano in enumerate(cuits_cercanos[:5]):  # Mostrar los 5 más cercanos
@@ -337,17 +262,17 @@ with col2:
         else:
             st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
     else:
-        st.info("Selecciona un punto en el mapa o ingresa coordenadas manualmente para ver resultados.")
+        st.info("Ingresa coordenadas y haz clic en 'Buscar' para ver resultados.")
 
 # Instrucciones de uso
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
-1. **Selección en mapa**: Haz clic en cualquier punto del mapa para seleccionar una ubicación.
-2. **Coordenadas manuales**: Alternativamente, puedes ingresar coordenadas exactas y hacer clic en "Buscar".
-3. **Filtrado**: Usa los filtros en el panel lateral para mostrar productores específicos.
-4. **Radio de búsqueda**: Ajusta el radio para ver productores a mayor o menor distancia del punto seleccionado.
-5. **Resultados**: El sistema mostrará el productor más cercano y todos los que estén dentro del radio especificado.
+1. **Visualización del mapa**: El mapa muestra la ubicación de todos los productores filtrados.
+2. **Coordenadas**: Ingresa las coordenadas del punto que deseas consultar.
+3. **Búsqueda**: Haz clic en "Buscar en estas coordenadas" para encontrar productores cercanos.
+4. **Resultados**: El sistema mostrará el productor más cercano y todos los que estén dentro del radio especificado.
+5. **Filtrado**: Usa los filtros en el panel lateral para mostrar productores específicos.
 """)
 
 # Inicializar variables de estado si no existen
