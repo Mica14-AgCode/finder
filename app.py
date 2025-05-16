@@ -182,19 +182,22 @@ def encontrar_productor_contenedor(lat, lon, datos):
     return productor_contenedor
 
 def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
-    """Encuentra CUITs cercanos a un punto dado dentro de un radio específico."""
+    """Encuentra productores cercanos a un punto dado dentro de un radio específico."""
     cercanos = []
+    # Para agrupar por CUIT
+    cuits_encontrados = set()
     
     # Primero verificar si está dentro de algún polígono
     productor_contenedor = encontrar_productor_contenedor(lat, lon, datos)
     if productor_contenedor:
         cercanos.append(productor_contenedor)
+        cuits_encontrados.add(productor_contenedor['cuit'])
     
     # Buscar otros productores cercanos por distancia
     for idx, fila in datos.iterrows():
         if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-            # Si ya encontramos que este productor contiene el punto, saltarlo
-            if productor_contenedor and productor_contenedor['cuit'] == fila['cuit']:
+            # Si ya encontramos este CUIT, saltarlo
+            if fila['cuit'] in cuits_encontrados:
                 continue
                 
             # Calcular distancia
@@ -204,6 +207,7 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
             )
             
             if distancia <= radio_km:
+                # Agregar a resultado y marcar como encontrado
                 cercanos.append({
                     'cuit': fila['cuit'],
                     'titular': fila['titular'] if 'titular' in fila else 'No disponible',
@@ -216,6 +220,7 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
                     'poligono': fila.get('poligono', None),
                     'contenedor': False
                 })
+                cuits_encontrados.add(fila['cuit'])
     
     # Ordenar por distancia
     cercanos = sorted(cercanos, key=lambda x: x['distancia'])
@@ -253,44 +258,9 @@ datos_productores = cargar_datos()
 
 # Si hay datos, mostrar información básica
 if not datos_productores.empty:
-    st.success(f"Datos cargados correctamente: {len(datos_productores)} registros")
-
-# Verificar si hay parámetros en la URL para buscar productores
-try:
-    query_params = st.query_params
-    if 'get_productores' in query_params:
-        productores_json = []
-        for idx, fila in datos_productores.iterrows():
-            if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-                productores_json.append({
-                    'cuit': fila['cuit'],
-                    'titular': fila['titular'],
-                    'latitud': float(fila['latitud']),
-                    'longitud': float(fila['longitud']),
-                    'renspa': fila.get('renspa', 'No disponible'),
-                    'localidad': fila.get('localidad', 'No disponible')
-                })
-        st.json(productores_json)
-        st.stop()
-except:
-    try:
-        query_params = st.experimental_get_query_params()
-        if 'get_productores' in query_params:
-            productores_json = []
-            for idx, fila in datos_productores.iterrows():
-                if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-                    productores_json.append({
-                        'cuit': fila['cuit'],
-                        'titular': fila['titular'],
-                        'latitud': float(fila['latitud']),
-                        'longitud': float(fila['longitud']),
-                        'renspa': fila.get('renspa', 'No disponible'),
-                        'localidad': fila.get('localidad', 'No disponible')
-                    })
-            st.json(productores_json)
-            st.stop()
-    except:
-        pass
+    # Contar CUITs únicos
+    cuits_unicos = datos_productores['cuit'].nunique()
+    st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
 
 # Layout principal
 col1, col2 = st.columns([3, 1])
@@ -306,46 +276,26 @@ with col1:
         centro_lat = datos_productores['latitud'].mean()
         centro_lon = datos_productores['longitud'].mean()
     
-    # Preparar polígonos para el mapa
-    poligonos = []
-    if 'poligono' in datos_productores.columns:
-        for idx, fila in datos_productores.iterrows():
-            if pd.notna(fila['poligono']):
-                coords = wkt_a_coordenadas(fila['poligono'])
-                if coords:
-                    poligonos.append({
-                        'coords': coords,
-                        'cuit': fila['cuit'],
-                        'titular': fila['titular'],
-                        'latitud': float(fila['latitud']),
-                        'longitud': float(fila['longitud'])
-                    })
-    
-    # Preparar datos de productores para mostrar como marcadores
-    productores_marcadores = []
-    for idx, fila in datos_productores.iterrows():
-        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-            productores_marcadores.append({
-                'cuit': fila['cuit'],
-                'titular': fila['titular'],
-                'latitud': float(fila['latitud']),
-                'longitud': float(fila['longitud']),
-                'renspa': fila.get('renspa', 'No disponible'),
-                'localidad': fila.get('localidad', 'No disponible')
-            })
-    
-    # Para depuración
-    if st.checkbox("Mostrar información de depuración"):
-        st.write(f"Se encontraron {len(poligonos)} polígonos en los datos")
-        st.write(f"Total de productores con coordenadas: {len(productores_marcadores)}")
+    # Preparar polígonos para la respuesta
+    poligonos_result = []
+    if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
+        lat, lon = st.session_state.punto_seleccionado
+        productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+        
+        # Solo incluir polígonos de productores cercanos
+        cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
         if 'poligono' in datos_productores.columns:
-            st.write(f"La columna 'poligono' existe en el CSV")
-            # Mostrar algunos ejemplos de polígonos
-            st.write("Ejemplos de polígonos:")
-            for i, fila in datos_productores.iterrows():
-                if pd.notna(fila.get('poligono')):
-                    st.code(str(fila['poligono'])[:200] + "..." if len(str(fila['poligono'])) > 200 else str(fila['poligono']))
-                    break
+            for idx, fila in datos_productores.iterrows():
+                if pd.notna(fila['poligono']) and fila['cuit'] in cuits_cercanos:
+                    coords = wkt_a_coordenadas(fila['poligono'])
+                    if coords:
+                        poligonos_result.append({
+                            'coords': coords,
+                            'cuit': fila['cuit'],
+                            'titular': fila['titular'],
+                            'latitud': float(fila['latitud']),
+                            'longitud': float(fila['longitud'])
+                        })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -416,8 +366,8 @@ with col1:
             let selectedCoords = null;
             
             // Datos para el mapa
-            const poligonos = {json.dumps(poligonos)};
-            const productores = {json.dumps(productores_marcadores)};
+            const poligonos = {json.dumps(poligonos_result)};
+            const mostrarResultado = {"true" if st.session_state.mostrar_resultado else "false"};
             
             // Mostrar mensaje temporal
             function showMessage(message, duration = 3000) {{
@@ -435,8 +385,6 @@ with col1:
             
             function initMap() {{
                 console.log("Iniciando mapa...");
-                console.log("Número de polígonos:", poligonos.length);
-                console.log("Número de productores:", productores.length);
                 
                 // Crear el mapa
                 map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
@@ -447,7 +395,7 @@ with col1:
                 }});
                 
                 // Agregar capa base - OpenStreetMap
-                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}/{{z}}/{{x}}/{{y}}.png', {{
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }});
                 
@@ -466,16 +414,11 @@ with col1:
                 polygonsLayer = L.layerGroup().addTo(map);
                 markersLayer = L.layerGroup().addTo(map);
                 
-                // Dibujar polígonos si hay
-                if (poligonos.length > 0) {{
+                // Dibujar polígonos solo si hay resultados de búsqueda
+                if (mostrarResultado && poligonos.length > 0) {{
                     dibujarPoligonos();
                     console.log(`Se dibujaron ${{poligonos.length}} polígonos`);
-                }} else {{
-                    console.log("No hay polígonos para dibujar");
                 }}
-                
-                // Mostrar productores como marcadores
-                mostrarProductoresComoMarcadores();
                 
                 // Evento de clic en el mapa
                 map.on('click', function(e) {{
@@ -493,9 +436,6 @@ with col1:
                     selectedMarker = L.marker([lat, lng], {{
                         zIndexOffset: 1000  // Asegurar que esté encima de otros marcadores
                     }}).addTo(map);
-                    
-                    // Ejecutar búsqueda automáticamente
-                    buscarCoordenadas(lat, lng);
                 }});
                 
                 // Evento para botón de búsqueda
@@ -507,6 +447,16 @@ with col1:
                     
                     buscarCoordenadas(selectedCoords[0], selectedCoords[1]);
                 }});
+                
+                // Si hay un punto seleccionado anteriormente, mostrarlo
+                const puntoSeleccionado = {"[" + str(st.session_state.punto_seleccionado[0]) + "," + str(st.session_state.punto_seleccionado[1]) + "]" if st.session_state.punto_seleccionado else "null"};
+                if (puntoSeleccionado) {{
+                    selectedCoords = puntoSeleccionado;
+                    document.getElementById('coords-display').textContent = `Lat: ${{puntoSeleccionado[0].toFixed(6)}}, Lng: ${{puntoSeleccionado[1].toFixed(6)}}`;
+                    selectedMarker = L.marker([puntoSeleccionado[0], puntoSeleccionado[1]], {{
+                        zIndexOffset: 1000
+                    }}).addTo(map);
+                }}
             }}
             
             // Función para dibujar polígonos
@@ -522,20 +472,6 @@ with col1:
                             fillOpacity: 0.2
                         }}).addTo(polygonsLayer);
                         
-                        // Añadir un marcador en el centro del polígono
-                        const centroid = getCentroid(poligono.coords);
-                        if (centroid) {{
-                            L.marker([centroid[0], centroid[1]], {{
-                                title: poligono.titular
-                            }}).addTo(map).bindPopup(`
-                                <strong>CUIT:</strong> ${{poligono.cuit}}<br>
-                                <strong>Razón Social:</strong> ${{poligono.titular}}<br>
-                                <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                    Buscar este productor
-                                </button>
-                            `);
-                        }}
-                        
                         polygon.bindPopup(`
                             <strong>CUIT:</strong> ${{poligono.cuit}}<br>
                             <strong>Razón Social:</strong> ${{poligono.titular}}<br>
@@ -545,45 +481,6 @@ with col1:
                         `);
                     }}
                 }});
-            }}
-            
-            // Función para calcular el centroide de un polígono
-            function getCentroid(coords) {{
-                if (!coords || coords.length === 0) return null;
-                
-                let sumX = 0;
-                let sumY = 0;
-                
-                for (let i = 0; i < coords.length; i++) {{
-                    sumX += coords[i][0];
-                    sumY += coords[i][1];
-                }}
-                
-                return [sumX / coords.length, sumY / coords.length];
-            }}
-            
-            // Función para mostrar productores como marcadores
-            function mostrarProductoresComoMarcadores() {{
-                markersLayer.clearLayers();
-                
-                // Crear marcadores con los datos que tenemos directamente
-                productores.forEach(productor => {{
-                    if (productor.latitud && productor.longitud) {{
-                        L.marker([productor.latitud, productor.longitud], {{
-                            title: productor.titular
-                        }}).addTo(markersLayer).bindPopup(`
-                            <strong>CUIT:</strong> ${{productor.cuit}}<br>
-                            <strong>Razón Social:</strong> ${{productor.titular}}<br>
-                            <strong>RENSPA:</strong> ${{productor.renspa}}<br>
-                            <strong>Localidad:</strong> ${{productor.localidad}}<br>
-                            <button onclick="buscarCoordenadas(${{productor.latitud}}, ${{productor.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                Buscar este productor
-                            </button>
-                        `);
-                    }}
-                }});
-                
-                console.log(`Se mostraron ${{productores.length}} productores como marcadores`);
             }}
             
             // Función para buscar en coordenadas
@@ -636,8 +533,11 @@ with col2:
                     # Actualizar para usar el nuevo método
                     for key in list(query_params.keys()):
                         del query_params[key]
-            except:
-                st.error("Error al procesar las coordenadas desde la URL")
+                    
+                    # Forzar recarga para mostrar resultados actualizados
+                    st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Error al procesar las coordenadas desde la URL: {e}")
     except:
         # Fallback para versiones anteriores de Streamlit
         try:
@@ -655,10 +555,13 @@ with col2:
                         
                         # Limpiar los parámetros para evitar búsquedas repetidas en recargas
                         st.experimental_set_query_params()
-                except:
-                    st.error("Error al procesar las coordenadas desde la URL")
-        except:
-            st.warning("No se pudo acceder a los parámetros de la URL. Por favor utiliza una versión más reciente de Streamlit.")
+                        
+                        # Forzar recarga para mostrar resultados actualizados
+                        st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error al procesar las coordenadas desde la URL: {e}")
+        except Exception as e:
+            st.warning(f"No se pudo acceder a los parámetros de la URL. Por favor utiliza una versión más reciente de Streamlit. Error: {e}")
     
     # Mostrar resultados si tenemos un punto seleccionado
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
@@ -672,7 +575,9 @@ with col2:
             productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
         
         if productores_cercanos:
-            st.success(f"Se encontraron {len(productores_cercanos)} productores en un radio de {radio_busqueda} km")
+            # Contar razones sociales únicas
+            cuits_unicos = len(set(productor['cuit'] for productor in productores_cercanos))
+            st.success(f"Se encontraron {cuits_unicos} productores en un radio de {radio_busqueda} km")
             
             # Productor más cercano o contenedor
             mas_cercano = productores_cercanos[0]
@@ -735,8 +640,8 @@ st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
 1. **Selección de punto**: Haz clic en cualquier punto del mapa para seleccionarlo automáticamente.
-2. **Visualización de polígonos**: Si los productores tienen polígonos asociados, se mostrarán en el mapa.
-3. **Búsqueda automática**: Cuando haces clic en el mapa, se buscan automáticamente los productores cercanos.
+2. **Búsqueda**: Haz clic en el botón "Buscar en estas coordenadas" para encontrar productores cercanos.
+3. **Visualización de polígonos**: Los polígonos de los productores cercanos se mostrarán en el mapa tras la búsqueda.
 4. **Radio de búsqueda**: Ajusta el radio de búsqueda en el panel lateral para ampliar o reducir el área de búsqueda.
-5. **Interacción con polígonos**: Haz clic en un polígono para ver información y buscar ese productor.
+5. **Interacción con polígonos**: Haz clic en un polígono para ver información del productor asociado.
 """)
