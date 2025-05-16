@@ -1,30 +1,4 @@
-    # Para depuración
-    debug_checkbox = st.checkbox("Mostrar información de depuración")
-    
-    if debug_checkbox:
-        st.write("Estado de la aplicación:")
-        st.write({
-            "punto_seleccionado": st.session_state.punto_seleccionado,
-            "mostrar_resultado": st.session_state.mostrar_resultado,
-            "busqueda_realizada": st.session_state.busqueda_realizada,
-            "productores_cercanos_count": len(st.session_state.productores_cercanos) if hasattr(st.session_state, 'productores_cercanos') and st.session_state.productores_cercanos else 0,
-            "poligonos_encontrados": len(poligonos_result)
-        })
-        
-        if 'poligono' in datos_productores.columns:
-            st.write(f"La columna 'poligono' existe en el CSV")
-            
-            # Mostrar algunos ejemplos de polígonos
-            poligonos_count = datos_productores['poligono'].notna().sum()
-            st.write(f"Número de polígonos en el CSV: {poligonos_count}")
-            
-            if poligonos_count > 0:
-                st.write("Ejemplos de polígonos del CSV:")
-                for i, fila in datos_productores.iterrows():
-                    if pd.notna(fila.get('poligono')):
-                        poligono_text = str(fila['poligono'])
-                        st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
-                        breakimport streamlit as st
+import streamlit as st
 import pandas as pd
 import math
 import os
@@ -312,6 +286,32 @@ if "coordinates" in st.session_state:
     if time.time() - st.session_state.timestamp_ultima_busqueda > 2:  # Mínimo 2 segundos entre búsquedas
         procesar_mensaje_js(lat, lon)
         del st.session_state.coordinates  # Limpiar para evitar búsquedas repetidas
+
+# Información de depuración (movida antes de layout principal)
+show_debug = st.checkbox("Mostrar información de depuración")
+if show_debug:
+    st.write("Estado de la aplicación:")
+    st.write({
+        "punto_seleccionado": st.session_state.punto_seleccionado,
+        "mostrar_resultado": st.session_state.mostrar_resultado,
+        "busqueda_realizada": st.session_state.busqueda_realizada,
+        "productores_cercanos_count": len(st.session_state.productores_cercanos) if hasattr(st.session_state, 'productores_cercanos') and st.session_state.productores_cercanos else 0
+    })
+    
+    if 'poligono' in datos_productores.columns:
+        st.write(f"La columna 'poligono' existe en el CSV")
+        
+        # Mostrar algunos ejemplos de polígonos
+        poligonos_count = datos_productores['poligono'].notna().sum()
+        st.write(f"Número de polígonos en el CSV: {poligonos_count}")
+        
+        if poligonos_count > 0:
+            st.write("Ejemplos de polígonos del CSV:")
+            for i, fila in datos_productores.iterrows():
+                if pd.notna(fila.get('poligono')):
+                    poligono_text = str(fila['poligono'])
+                    st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
+                    break
 
 # Layout principal
 col1, col2 = st.columns([3, 1])
@@ -683,6 +683,28 @@ with col2:
             
             # Mostrar tabla
             st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
+            
+            # Mostrar detalles expandibles
+            for i, productor in enumerate(productores_cercanos[:10]):  # Limitar a los 10 más cercanos
+                titulo = f"{i+1}. {productor['titular']} ({productor['distancia']} km)"
+                if productor.get('contenedor', False):
+                    titulo += " - Contiene el punto"
+                    
+                with st.expander(titulo):
+                    st.markdown(f"""
+                    **CUIT:** {productor['cuit']}  
+                    **Razón Social:** {productor['titular']}  
+                    **RENSPA:** {productor.get('renspa', 'No disponible')}  
+                    **Localidad:** {productor.get('localidad', 'No disponible')}  
+                    **Superficie:** {productor.get('superficie', 'No disponible')} ha  
+                    **Distancia:** {productor['distancia']} km  
+                    **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
+                    **Tiene polígono:** {"Sí" if productor.get('poligono') else "No"}
+                    """)
+        else:
+            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
+    else:
+        st.info("Haz clic en el mapa para seleccionar un punto y buscar productores cercanos")
 
 # Instrucciones para usar el mapa
 st.markdown("---")
