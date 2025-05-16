@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import json
+import base64
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -17,12 +18,8 @@ if 'punto_seleccionado' not in st.session_state:
     st.session_state.punto_seleccionado = None
 if 'busqueda_realizada' not in st.session_state:
     st.session_state.busqueda_realizada = False
-if 'latitud_input' not in st.session_state:
-    st.session_state.latitud_input = -34.6037
-if 'longitud_input' not in st.session_state:
-    st.session_state.longitud_input = -58.3816
-if 'coordenadas_seleccionadas' not in st.session_state:
-    st.session_state.coordenadas_seleccionadas = None
+if 'archivo_cargado' not in st.session_state:
+    st.session_state.archivo_cargado = None
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -65,7 +62,11 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
             'localidad': ['Localidad 1', 'Localidad 2'],
             'superficie': [100, 150],
             'longitud': [-60.0, -60.2],
-            'latitud': [-34.0, -34.2]
+            'latitud': [-34.0, -34.2],
+            'poligono': [
+                "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
+                "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))"
+            ]
         })
 
 # Función para encontrar el CUIT más cercano a un punto
@@ -91,7 +92,9 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
                     'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
                     'distancia': round(distancia, 2),
                     'latitud': fila['latitud'],
-                    'longitud': fila['longitud']
+                    'longitud': fila['longitud'],
+                    'poligono': fila['poligono'] if 'poligono' in fila else None,
+                    'idx': idx
                 }
     
     return cuit_cercano
@@ -120,7 +123,9 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
                     'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
                     'distancia': round(distancia, 2),
                     'latitud': fila['latitud'],
-                    'longitud': fila['longitud']
+                    'longitud': fila['longitud'],
+                    'poligono': fila['poligono'] if 'poligono' in fila else None,
+                    'idx': idx
                 })
     
     # Ordenar por distancia
@@ -128,11 +133,32 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
     
     return cercanos
 
-# Callback para actualizar coordenadas desde JavaScript
-def handle_coords(lat, lng):
-    st.session_state.coordenadas_seleccionadas = (lat, lng)
-    st.session_state.punto_seleccionado = (lat, lng)
-    st.session_state.busqueda_realizada = True
+# Función para parsear polígonos WKT a coordenadas Leaflet
+def wkt_a_coordenadas(wkt_str):
+    """Convierte un string WKT de polígono a coordenadas Leaflet [[lat, lng], ...]"""
+    if not wkt_str or not isinstance(wkt_str, str):
+        return []
+    
+    try:
+        # Extraer las coordenadas entre paréntesis (ignorando POLYGON, etc.)
+        coords_str = wkt_str.replace('POLYGON', '').replace('((', '').replace('))', '').strip()
+        
+        # Separar las coordenadas por coma
+        coords_pares = coords_str.split(',')
+        
+        # Convertir a pares de [lat, lng] para Leaflet (invierte el orden)
+        coords = []
+        for par in coords_pares:
+            valores = par.strip().split()
+            if len(valores) >= 2:
+                # En WKT es lon lat, pero en Leaflet necesitamos lat lon
+                lon, lat = float(valores[0]), float(valores[1])
+                coords.append([lat, lon])
+        
+        return coords
+    except Exception as e:
+        st.warning(f"Error al convertir polígono WKT: {e}")
+        return []
 
 # Mostrar mensaje de instrucciones
 with st.sidebar:
@@ -143,6 +169,7 @@ with st.sidebar:
     1. Llamarse '{RUTA_CSV}'
     2. Estar en la misma carpeta que esta aplicación
     3. Contener al menos las columnas: 'cuit', 'titular', 'latitud', 'longitud'
+    4. Opcionalmente: 'poligono' en formato WKT
     """)
 
 # Cargar datos
@@ -172,14 +199,33 @@ if 'localidad' in datos_productores.columns:
     if localidad_seleccionada != "Todas":
         datos_filtrados = datos_filtrados[datos_filtrados['localidad'] == localidad_seleccionada]
 
-# Radio de búsqueda ajustable
+# Radio de búsqueda ajustable con mayor rango
 radio_busqueda = st.sidebar.slider(
     "Radio de búsqueda (km):", 
-    min_value=0.5, 
-    max_value=20.0, 
+    min_value=0.1, 
+    max_value=100.0, 
     value=5.0, 
-    step=0.5
+    step=0.1
 )
+
+# Opción para cargar archivos KML/KMZ/SHP
+st.sidebar.header("Cargar archivos")
+archivo_subido = st.sidebar.file_uploader(
+    "Cargar archivo KML/KMZ/Shapefile", 
+    type=["kml", "kmz", "shp", "zip"],
+    help="Sube un archivo KML, KMZ o Shapefile (ZIP) para visualizarlo en el mapa"
+)
+
+if archivo_subido is not None:
+    # Guardar el archivo en session_state para usarlo en el mapa
+    bytes_data = archivo_subido.getvalue()
+    # Convertir a base64 para pasar al JavaScript
+    b64_data = base64.b64encode(bytes_data).decode()
+    st.session_state.archivo_cargado = {
+        "nombre": archivo_subido.name,
+        "tipo": archivo_subido.type,
+        "b64": b64_data
+    }
 
 # Layout principal
 col1, col2 = st.columns([3, 1])
@@ -194,28 +240,218 @@ with col1:
         centro_lat = datos_filtrados['latitud'].mean()
         centro_lon = datos_filtrados['longitud'].mean()
         
+        # Preparar datos de polígonos si existen
+        poligonos_data = []
+        if 'poligono' in datos_filtrados.columns:
+            for idx, fila in datos_filtrados.iterrows():
+                if pd.notna(fila['poligono']):
+                    coords = wkt_a_coordenadas(fila['poligono'])
+                    if coords:
+                        poligonos_data.append({
+                            'coords': coords,
+                            'cuit': fila['cuit'],
+                            'titular': fila['titular'],
+                            'idx': int(idx)
+                        })
+        
+        # Convertir a JSON
+        poligonos_json = json.dumps(poligonos_data)
+        
+        # JSON para colores de polígonos cercanos
+        colors_json = json.dumps([
+            "#3388ff", "#ff4433", "#33ff44", "#ff33ff", "#ffff33", 
+            "#33ffff", "#ff8833", "#8833ff", "#88ff33", "#ff3388"
+        ])
+        
         # Código HTML y JavaScript para el mapa Leaflet
         mapa_html = f"""
-        <div id="map" style="width:100%; height:500px;"></div>
-        <div id="selected-coords" style="margin-top:10px; padding:10px; background-color:#f8f9fa; border-radius:5px;">
-            Coordenadas del punto seleccionado: <span id="selected-lat">-</span>, <span id="selected-lng">-</span>
-            <button id="use-coords" style="margin-left:10px; padding:5px 10px; background-color:#4CAF50; color:white; border:none; border-radius:4px; cursor:pointer;">Usar estas coordenadas</button>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+        <style>
+            #map {{
+                width: 100%;
+                height: 500px;
+                border-radius: 8px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            }}
+            #selected-coords {{
+                margin-top: 10px;
+                padding: 12px;
+                background-color: #f8f9fa;
+                border-radius: 8px;
+                box-shadow: 0 0 5px rgba(0,0,0,0.05);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }}
+            #use-coords-btn {{
+                padding: 10px 20px;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: bold;
+                font-size: 16px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                transition: all 0.3s;
+            }}
+            #use-coords-btn:hover {{
+                background-color: #45a049;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                transform: translateY(-2px);
+            }}
+            .coord-value {{
+                font-weight: bold;
+                color: #333;
+            }}
+        </style>
+        
+        <div id="map"></div>
+        <div id="selected-coords">
+            <div>
+                <span>Coordenadas seleccionadas:</span>
+                <span class="coord-value" id="selected-lat">-</span>, 
+                <span class="coord-value" id="selected-lng">-</span>
+            </div>
+            <button id="use-coords-btn">🔍 USAR ESTAS COORDENADAS</button>
         </div>
         
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
         <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+        <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+        <script src="https://unpkg.com/@tmcw/togeojson/dist/togeojson.umd.js"></script>
+        <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
         
         <script>
             // Inicializar el mapa
             const map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
             
             // Agregar capa base de satélite (ESRI) por defecto
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            const baseLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
                 attribution: 'Tiles &copy; Esri'
             }}).addTo(map);
             
+            // Agregar capa alternativa de OpenStreetMap
+            const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }});
+            
+            // Crear capas base para el control
+            const baseMaps = {{
+                "Satélite": baseLayer,
+                "Mapa": osmLayer
+            }};
+            
+            // Agregar control de capas
+            L.control.layers(baseMaps).addTo(map);
+            
+            // Agregar control de búsqueda de localidades
+            L.Control.geocoder({{
+                defaultMarkGeocode: false,
+                placeholder: "Buscar localidad...",
+                errorMessage: "No se encontró la localidad",
+                suggestMinLength: 3,
+                suggestTimeout: 250,
+                queryMinLength: 1
+            }})
+            .on('markgeocode', function(e) {{
+                const latlng = e.geocode.center;
+                map.setView(latlng, 13);
+                L.marker(latlng).addTo(map);
+            }})
+            .addTo(map);
+            
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
+            
+            // Colección de polígonos para los productores
+            const poligonosLayer = L.layerGroup().addTo(map);
+            
+            // Array de colores para polígonos
+            const colors = {colors_json};
+            
+            // Variable para guardar los polígonos cercanos
+            let poligonosCercanos = [];
+            
+            // Función para dibujar polígonos de productores
+            function dibujarPoligonos(poligonos) {{
+                // Limpiar los polígonos existentes
+                poligonosLayer.clearLayers();
+                
+                // Obtener los datos de polígonos
+                const datos = {poligonos_json};
+                
+                datos.forEach((poligono, index) => {{
+                    const coords = poligono.coords;
+                    if (coords && coords.length > 0) {{
+                        // Usar el primer color por defecto
+                        const poly = L.polygon(coords, {{
+                            color: colors[0],
+                            fillOpacity: 0.2,
+                            weight: 2
+                        }});
+                        
+                        // Agregar popup con información
+                        poly.bindPopup(`
+                            <strong>CUIT:</strong> ${{poligono.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{poligono.titular}}
+                        `);
+                        
+                        // Guardar el índice para identificar el polígono
+                        poly.idx = poligono.idx;
+                        
+                        // Agregar el polígono a la capa
+                        poly.addTo(poligonosLayer);
+                    }}
+                }});
+            }}
+            
+            // Función para colorear polígonos cercanos
+            function colorearPoligonosCercanos(cercanos) {{
+                // Recorrer los polígonos en la capa
+                poligonosLayer.eachLayer(layer => {{
+                    // Verificar si es un polígono
+                    if (layer instanceof L.Polygon) {{
+                        // Color predeterminado (azul)
+                        layer.setStyle({{ color: colors[0], fillOpacity: 0.2, weight: 2 }});
+                        
+                        // Buscar si este polígono está entre los cercanos
+                        for (let i = 0; i < cercanos.length; i++) {{
+                            if (layer.idx === cercanos[i].idx) {{
+                                // Asignar un color diferente según la posición (hasta 10 colores)
+                                const colorIdx = i % colors.length;
+                                layer.setStyle({{ 
+                                    color: colors[colorIdx], 
+                                    fillColor: colors[colorIdx],
+                                    fillOpacity: 0.3, 
+                                    weight: 3
+                                }});
+                                break;
+                            }}
+                        }}
+                    }}
+                }});
+            }}
+            
+            // Función para colorear el polígono más cercano
+            function colorearPoligonoMasCercano(masCercano) {{
+                if (!masCercano) return;
+                
+                poligonosLayer.eachLayer(layer => {{
+                    if (layer instanceof L.Polygon && layer.idx === masCercano.idx) {{
+                        layer.setStyle({{ 
+                            color: '#ff0000', 
+                            fillColor: '#ff0000',
+                            fillOpacity: 0.4, 
+                            weight: 4
+                        }});
+                        layer.bringToFront();
+                    }}
+                }});
+            }}
+            
+            // Dibujar polígonos al cargar
+            dibujarPoligonos();
             
             // Evento de clic en el mapa
             map.on('click', function(e) {{
@@ -245,29 +481,87 @@ with col1:
             }});
             
             // Evento para el botón de usar coordenadas
-            document.getElementById('use-coords').addEventListener('click', function() {{
+            document.getElementById('use-coords-btn').addEventListener('click', function() {{
                 const lat = parseFloat(document.getElementById('selected-lat').textContent);
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
                     // Enviar datos de vuelta a Streamlit
-                    const inputs = parent.document.querySelectorAll('input[type=number]');
-                    if (inputs.length >= 2) {{
-                        // Actualizar los campos de entrada numérica
-                        inputs[0].value = lat;
-                        inputs[1].value = lng;
-                        
-                        // Buscar el botón "Buscar en estas coordenadas" y hacer clic en él
-                        const buttons = parent.document.querySelectorAll('button');
-                        for (let i = 0; i < buttons.length; i++) {{
-                            if (buttons[i].innerText.includes('Buscar en estas coordenadas')) {{
-                                buttons[i].click();
-                                break;
-                            }}
-                        }}
+                    window.parent.postMessage({{
+                        type: 'streamlit:setComponentValue',
+                        value: {{ lat: lat, lng: lng }}
+                    }}, '*');
+                }}
+            }});
+            
+            // Manejador para actualizar los polígonos cercanos
+            window.addEventListener('message', function(event) {{
+                const data = event.data;
+                
+                // Comprobar si tenemos datos de polígonos cercanos
+                if (data && data.type === 'cercanos') {{
+                    // Actualizar los polígonos cercanos
+                    colorearPoligonosCercanos(data.cercanos);
+                    
+                    // Colorear el polígono más cercano
+                    if (data.masCercano) {{
+                        colorearPoligonoMasCercano(data.masCercano);
                     }}
                 }}
             }});
+            
+            // Función para cargar archivo KML/KMZ/Shapefile
+            function cargarArchivo(tipo, datos) {{
+                try {{
+                    if (tipo.includes('kml')) {{
+                        // Convertir de base64 a texto
+                        const texto = atob(datos);
+                        // Crear un objeto DOM del KML
+                        const parser = new DOMParser();
+                        const kml = parser.parseFromString(texto, 'text/xml');
+                        // Convertir a GeoJSON usando toGeoJSON
+                        const geojson = toGeoJSON.kml(kml);
+                        
+                        // Agregar al mapa
+                        L.geoJSON(geojson, {{
+                            style: {{
+                                color: '#ff9900',
+                                weight: 2,
+                                fillOpacity: 0.2
+                            }}
+                        }}).addTo(map);
+                        
+                        // Hacer zoom al extent
+                        if (geojson.features.length > 0) {{
+                            const bounds = L.geoJSON(geojson).getBounds();
+                            map.fitBounds(bounds);
+                        }}
+                        
+                    }} else if (tipo.includes('zip') || tipo.includes('shp')) {{
+                        // Usar shpjs para cargar el shapefile
+                        shp(datos).then(function(geojson) {{
+                            L.geoJSON(geojson, {{
+                                style: {{
+                                    color: '#ff9900',
+                                    weight: 2,
+                                    fillOpacity: 0.2
+                                }}
+                            }}).addTo(map);
+                            
+                            // Hacer zoom al extent
+                            if (geojson.features && geojson.features.length > 0) {{
+                                const bounds = L.geoJSON(geojson).getBounds();
+                                map.fitBounds(bounds);
+                            }}
+                        }});
+                    }}
+                }} catch (error) {{
+                    console.error('Error al cargar el archivo:', error);
+                }}
+            }}
+            
+            // Cargar archivo si existe
+            {f"cargarArchivo('{st.session_state.archivo_cargado['tipo']}', '{st.session_state.archivo_cargado['b64']}');" if st.session_state.archivo_cargado else ""}
             
             // Si hay un punto seleccionado previamente, mostrarlo
             {f"const lat = {st.session_state.punto_seleccionado[0]}; const lng = {st.session_state.punto_seleccionado[1]};" if st.session_state.punto_seleccionado else ""}
@@ -297,22 +591,21 @@ with col1:
         """
         
         # Mostrar el mapa con Leaflet
-        st.components.v1.html(mapa_html, height=600)
+        components_result = st.components.v1.html(mapa_html, height=600)
         
-        # Opción para ingresar coordenadas manualmente
-        st.subheader("O ingresa coordenadas manualmente:")
-        col_lat, col_lon = st.columns(2)
-        with col_lat:
-            lat_input = st.number_input("Latitud", value=st.session_state.latitud_input, format="%.4f", step=0.001, key="lat_input")
-            st.session_state.latitud_input = lat_input
-        with col_lon:
-            lon_input = st.number_input("Longitud", value=st.session_state.longitud_input, format="%.4f", step=0.001, key="lon_input")
-            st.session_state.longitud_input = lon_input
-        
-        if st.button("Buscar en estas coordenadas"):
-            st.session_state.punto_seleccionado = (lat_input, lon_input)
+        # Procesar los resultados del componente HTML
+        if isinstance(components_result, dict) and 'lat' in components_result and 'lng' in components_result:
+            # Guardar las coordenadas en session_state
+            st.session_state.punto_seleccionado = (components_result['lat'], components_result['lng'])
             st.session_state.busqueda_realizada = True
             st.rerun()
+        
+        # Mostrar ayuda para cargar archivos
+        st.markdown("""
+        ### Cargar archivos geoespaciales
+        
+        Puedes subir archivos KML, KMZ o Shapefile (ZIP) desde el panel lateral para visualizarlos en el mapa.
+        """)
     else:
         st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
 
@@ -329,6 +622,24 @@ with col2:
         # Buscar el CUIT más cercano
         cuit_mas_cercano = encontrar_cuit_mas_cercano(lat, lon, datos_filtrados)
         
+        # Buscar CUITs cercanos
+        cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
+        
+        # Enviar datos de polígonos cercanos al mapa
+        if cuit_mas_cercano or (cuits_cercanos and len(cuits_cercanos) > 0):
+            # Crear JavaScript para actualizar el mapa
+            update_js = f"""
+            <script>
+            // Enviar datos al mapa
+            window.parent.postMessage({{
+                type: 'cercanos',
+                cercanos: {json.dumps(cuits_cercanos)},
+                masCercano: {json.dumps(cuit_mas_cercano) if cuit_mas_cercano else 'null'}
+            }}, '*');
+            </script>
+            """
+            st.components.v1.html(update_js, height=0)
+        
         if cuit_mas_cercano:
             st.success("**Productor más cercano:**")
             st.markdown(f"""
@@ -339,9 +650,6 @@ with col2:
             **Superficie:** {cuit_mas_cercano.get('superficie', 'No disponible')} ha  
             **Distancia:** {cuit_mas_cercano['distancia']} km  
             """)
-        
-        # Buscar CUITs cercanos
-        cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
         
         if cuits_cercanos:
             st.subheader(f"Productores cercanos (radio {radio_busqueda} km):")
@@ -375,15 +683,17 @@ with col2:
         else:
             st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
     else:
-        st.info("👈 Haz clic en el mapa o ingresa coordenadas manualmente para ver resultados.")
+        st.info("👈 Haz clic en el mapa y presiona 'USAR ESTAS COORDENADAS' para ver resultados.")
 
 # Instrucciones de uso
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
 1. **Selección en mapa**: Haz clic en cualquier punto del mapa.
-2. **Usar coordenadas**: Haz clic en el botón "Usar estas coordenadas" para consultar el punto seleccionado.
+2. **Usar coordenadas**: Haz clic en el botón grande "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
 3. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
 4. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
-5. **Radio de búsqueda**: Ajusta el radio para ver productores a mayor o menor distancia.
+5. **Radio de búsqueda**: Ajusta el radio para ver productores a mayor o menor distancia (0.1 a 100 km).
+6. **Búsqueda de localidad**: Usa el buscador en la esquina superior derecha del mapa.
+7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral.
 """)
