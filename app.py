@@ -1,9 +1,35 @@
-import streamlit as st
+# Modo de depuración
+if st.session_state.debug:
+    st.warning("MODO DEPURACIÓN ACTIVO. Se mostrarán mensajes adicionales para diagnóstico.")
+    debug_container = st.expander("Información de depuración", expanded=True)
+    with debug_container:
+        st.write("Estado de la aplicación:")
+        st.write(f"Punto seleccionado: {st.session_state.punto_seleccionado}")
+        st.write(f"Búsqueda realizada: {st.session_state.busqueda_realizada}")
+        st.write(f"Radio de búsqueda: {st.session_state.radio_busqueda} km")
+        st.write(f"Archivo cargado: {st.session_state.archivo_cargado['nombre'] if st.session_state.archivo_cargado else 'Ninguno'}")
+        st.write(f"Mostrar resultados: {st.session_state.mostrar_resultados}")
+        
+        # Detectar si se ejecuta localmente o en la nube
+        try:
+            local = os.path.exists(os.path.expanduser("~/.streamlit"))
+            st.write(f"Ejecución: {'Local' if local else 'En la nube'}")
+        except:
+            st.write("No se pudo determinar el entorno de ejecución")
+            
+        # Añadir un botón para simular una búsqueda con valores de prueba
+        if st.button("Simular búsqueda con coordenadas de prueba", key="simular_busqueda"):
+            st.session_state.punto_seleccionado = (-34.1, -60.1)  # Usar coordenadas de prueba
+            st.session_state.busqueda_realizada = True
+            st.session_state.mostrar_resultados = True
+            st.experimental_rerun()import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import math
 import json
 import base64
 import os
+import time
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -27,6 +53,8 @@ if 'mostrar_resultados' not in st.session_state:
     st.session_state.mostrar_resultados = False
 if 'poligono_seleccionado' not in st.session_state:
     st.session_state.poligono_seleccionado = None
+if 'debug' not in st.session_state:
+    st.session_state.debug = True
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -58,7 +86,7 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
     try:
         # Verificar si el archivo existe
         if not os.path.exists(ruta_archivo):
-            st.error(f"El archivo {ruta_archivo} no existe.")
+            st.error(f"El archivo {ruta_archivo} no existe. Usando datos de ejemplo.")
             return crear_datos_ejemplo()
         
         # Cargar el CSV
@@ -72,6 +100,10 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
             st.error(f"El archivo CSV no contiene las columnas necesarias: {', '.join(columnas_faltantes)}")
             return crear_datos_ejemplo()
         
+        # Imprimir información para depuración
+        st.write(f"CSV cargado correctamente con {len(df)} registros.")
+        st.write(f"Columnas: {', '.join(df.columns)}")
+        
         return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
@@ -79,17 +111,20 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
 
 def crear_datos_ejemplo():
     """Crea datos de ejemplo cuando no se puede cargar el CSV"""
+    st.warning("Usando datos de ejemplo para demostración")
     return pd.DataFrame({
-        'cuit': ['20123456789', '30987654321'],
-        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2'],
-        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02'],
-        'localidad': ['Localidad 1', 'Localidad 2'],
-        'superficie': [100, 150],
-        'longitud': [-60.0, -60.2],
-        'latitud': [-34.0, -34.2],
+        'cuit': ['20123456789', '30987654321', '33444555667', '27888999001'],
+        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2', 'Productor Ejemplo 3', 'Productor Ejemplo 4'],
+        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02', '11.222.3.33333/03', '44.555.6.66666/04'],
+        'localidad': ['Localidad 1', 'Localidad 2', 'Localidad 3', 'Localidad 4'],
+        'superficie': [100, 150, 200, 75],
+        'longitud': [-60.0, -60.2, -60.1, -59.9],
+        'latitud': [-34.0, -34.2, -34.1, -33.9],
         'poligono': [
             "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
-            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))"
+            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))",
+            "POLYGON((-60.1 -34.1, -60.2 -34.1, -60.2 -34.2, -60.1 -34.2, -60.1 -34.1))",
+            "POLYGON((-59.9 -33.9, -60.0 -33.9, -60.0 -34.0, -59.9 -34.0, -59.9 -33.9))"
         ]
     })
 
@@ -98,6 +133,10 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
     """Encuentra el CUIT más cercano a un punto dado"""
     distancia_min = float('inf')
     cuit_cercano = None
+    
+    # Para depuración
+    st.write(f"Buscando el CUIT más cercano al punto ({lat}, {lon})")
+    st.write(f"Total de registros en datos: {len(datos)}")
     
     for idx, fila in datos.iterrows():
         if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
@@ -121,6 +160,12 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
                     'idx': int(idx)
                 }
     
+    # Para depuración
+    if cuit_cercano:
+        st.write(f"CUIT más cercano encontrado: {cuit_cercano['cuit']} a {cuit_cercano['distancia']} km")
+    else:
+        st.write("No se encontró ningún CUIT cercano")
+        
     return cuit_cercano
 
 # Función para encontrar CUITs cercanos a un punto
@@ -258,10 +303,15 @@ if "lat" in params and "lng" in params:
         st.session_state.punto_seleccionado = (lat, lng)
         st.session_state.busqueda_realizada = True
         st.session_state.mostrar_resultados = True
+        
+        # Mostrar mensaje de depuración
+        st.write(f"Recibidos parámetros: lat={lat}, lng={lng}")
+        
         # Limpiar los parámetros para evitar recargas duplicadas
-        st.query_params.clear()
-    except:
-        pass
+        # Comentado temporalmente para depuración
+        # st.query_params.clear()
+    except Exception as e:
+        st.error(f"Error al procesar las coordenadas de la URL: {e}")
 
 with col1:
     st.subheader("Mapa Interactivo")
@@ -299,6 +349,11 @@ with col1:
         archivo_json = "null"
         if st.session_state.archivo_cargado:
             archivo_json = json.dumps(st.session_state.archivo_cargado)
+            # Mostrar información sobre el archivo cargado
+            if st.session_state.debug:
+                st.write(f"Archivo cargado: {st.session_state.archivo_cargado['nombre']}")
+                st.write(f"Tipo: {st.session_state.archivo_cargado['tipo']}")
+                st.write(f"Tamaño: {len(st.session_state.archivo_cargado['b64']) // 1024} KB")
         
         # Estado de búsqueda
         busqueda_realizada = "true" if st.session_state.busqueda_realizada else "false"
@@ -416,7 +471,7 @@ with col1:
         
         <script>
             // Función para agregar logs (ayuda en depuración)
-            const DEBUG = false; // Desactivar el modo depuración para que no aparezca el panel negro
+            const DEBUG = true; // Activar temporalmente para diagnosticar problemas
             const logPanel = document.getElementById('log-panel');
             
             function log(message) {{
@@ -1078,11 +1133,13 @@ with col2:
         
         st.write(f"**Coordenadas del punto:** Lat {lat:.4f}, Lng {lon:.4f}")
         
-        # Buscar el CUIT más cercano
-        cuit_mas_cercano = encontrar_cuit_mas_cercano(lat, lon, datos_filtrados)
-        
-        # Buscar CUITs cercanos
-        cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
+        # Mostrar un mensaje mientras se realiza la búsqueda
+        with st.spinner("Buscando productores cercanos..."):
+            # Buscar el CUIT más cercano
+            cuit_mas_cercano = encontrar_cuit_mas_cercano(lat, lon, datos_filtrados)
+            
+            # Buscar CUITs cercanos
+            cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
         
         # Enviar datos de polígonos cercanos al mapa
         if cuit_mas_cercano or (cuits_cercanos and len(cuits_cercanos) > 0):
@@ -1094,18 +1151,31 @@ with col2:
             <script>
             // Enviar datos al mapa
             try {{
+                console.log('Enviando datos de polígonos al mapa...');
+                const cercanos = {json.dumps(cuits_cercanos)};
+                const masCercano = {json.dumps(cuit_mas_cercano) if cuit_mas_cercano else 'null'};
+                
+                console.log('Polígonos cercanos:', cercanos);
+                console.log('Polígono más cercano:', masCercano);
+                
                 window.parent.postMessage({{
                     type: 'cercanos',
-                    cercanos: {json.dumps(cuits_cercanos)},
-                    masCercano: {json.dumps(cuit_mas_cercano) if cuit_mas_cercano else 'null'}
+                    cercanos: cercanos,
+                    masCercano: masCercano
                 }}, '*');
+                
                 console.log('Datos de polígonos enviados correctamente');
             }} catch (e) {{
                 console.error('Error al enviar datos de polígonos:', e);
             }}
             </script>
             """
-            st.components.v1.html(update_js, height=0)
+            components.html(update_js, height=0)
+            
+            if st.session_state.debug:
+                if cuit_mas_cercano:
+                    st.write("Datos enviados al mapa para actualización:")
+                    st.json({"mas_cercano": cuit_mas_cercano, "total_cercanos": len(cuits_cercanos)})
         
         if cuit_mas_cercano:
             st.success("**Productor más cercano:**")
@@ -1117,6 +1187,11 @@ with col2:
             **Superficie:** {cuit_mas_cercano.get('superficie', 'No disponible')} ha  
             **Distancia:** {cuit_mas_cercano['distancia']} km  
             """)
+            
+            # Crear un botón para ver en el mapa
+            if st.button("Centrar en este productor", key="centrar_mas_cercano"):
+                st.write("Centrando el mapa en el productor más cercano...")
+                # Aquí podríamos añadir alguna funcionalidad adicional si fuera necesario
         
         if cuits_cercanos:
             st.subheader(f"Productores cercanos (radio {radio_busqueda} km):")
