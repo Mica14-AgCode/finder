@@ -20,6 +20,8 @@ if 'busqueda_realizada' not in st.session_state:
     st.session_state.busqueda_realizada = False
 if 'archivo_cargado' not in st.session_state:
     st.session_state.archivo_cargado = None
+if 'radio_busqueda' not in st.session_state:
+    st.session_state.radio_busqueda = 5.0
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -199,14 +201,30 @@ if 'localidad' in datos_productores.columns:
     if localidad_seleccionada != "Todas":
         datos_filtrados = datos_filtrados[datos_filtrados['localidad'] == localidad_seleccionada]
 
-# Radio de búsqueda ajustable con mayor rango
-radio_busqueda = st.sidebar.slider(
-    "Radio de búsqueda (km):", 
-    min_value=0.1, 
-    max_value=100.0, 
-    value=5.0, 
-    step=0.1
-)
+# Radio de búsqueda ajustable con mayor rango (ahora se puede editar directamente)
+radio_col1, radio_col2 = st.sidebar.columns([3, 1])
+with radio_col1:
+    radio_busqueda = st.slider(
+        "Radio de búsqueda (km):", 
+        min_value=0.1, 
+        max_value=100.0, 
+        value=st.session_state.radio_busqueda, 
+        step=0.1
+    )
+with radio_col2:
+    radio_input = st.number_input(
+        "Editar radio:",
+        min_value=0.1,
+        max_value=100.0,
+        value=radio_busqueda,
+        step=0.1,
+        format="%.1f"
+    )
+    
+# Actualizar radio_busqueda si se cambia manualmente
+if radio_input != radio_busqueda:
+    radio_busqueda = radio_input
+    st.session_state.radio_busqueda = radio_busqueda
 
 # Opción para cargar archivos KML/KMZ/SHP
 st.sidebar.header("Cargar archivos")
@@ -232,7 +250,7 @@ col1, col2 = st.columns([3, 1])
 
 with col1:
     st.subheader("Mapa Interactivo")
-    st.info("👆 **Haz clic en cualquier punto del mapa** para buscar productores cercanos.")
+    st.info("👇 **Haz clic en cualquier punto del mapa** para buscar productores cercanos.")
     
     # Verificar que tenemos datos válidos para el mapa
     if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
@@ -305,9 +323,57 @@ with col1:
                 font-weight: bold;
                 color: #333;
             }}
+            .leaflet-control-geocoder {{
+                position: absolute;
+                top: 10px;
+                left: 50px;
+                z-index: 1000;
+                width: 250px !important;
+            }}
+            .leaflet-control-geocoder-form input {{
+                width: 100%;
+                padding: 8px 10px;
+                font-size: 14px;
+                border-radius: 4px;
+                border: 1px solid #ccc;
+                box-shadow: 0 1px 5px rgba(0,0,0,0.15);
+            }}
+            .leaflet-control-geocoder-form input::placeholder {{
+                color: #888;
+            }}
+            .leaflet-control-geocoder-alternatives {{
+                width: 100%;
+                max-height: 200px;
+                overflow-y: auto;
+                background: white;
+                border-radius: 4px;
+                box-shadow: 0 1px 5px rgba(0,0,0,0.15);
+            }}
+            .leaflet-control-geocoder-alternatives li {{
+                padding: 6px 10px;
+                border-bottom: 1px solid #eee;
+                cursor: pointer;
+            }}
+            .leaflet-control-geocoder-alternatives li:hover {{
+                background-color: #f0f0f0;
+            }}
+            .pointing-down-hand {{
+                position: absolute;
+                z-index: 1000;
+                top: 70px;
+                left: 10px;
+                font-size: 24px;
+                animation: pointdown 2s infinite;
+            }}
+            @keyframes pointdown {{
+                0% {{ transform: translateY(0); }}
+                50% {{ transform: translateY(5px); }}
+                100% {{ transform: translateY(0); }}
+            }}
         </style>
         
         <div id="map"></div>
+        <div class="pointing-down-hand">👇</div>
         <div id="selected-coords">
             <div>
                 <span>Coordenadas seleccionadas:</span>
@@ -345,21 +411,60 @@ with col1:
             // Agregar control de capas
             L.control.layers(baseMaps).addTo(map);
             
-            // Agregar control de búsqueda de localidades
-            L.Control.geocoder({{
+            // Agregar control de búsqueda de localidades mejorado
+            const geocoder = L.Control.geocoder({{
                 defaultMarkGeocode: false,
                 placeholder: "Buscar localidad...",
                 errorMessage: "No se encontró la localidad",
-                suggestMinLength: 3,
-                suggestTimeout: 250,
-                queryMinLength: 1
+                suggestMinLength: 2,
+                suggestTimeout: 100,
+                queryMinLength: 1,
+                geocoder: L.Control.Geocoder.nominatim({{
+                    geocodingQueryParams: {{
+                        countrycodes: 'ar',
+                        limit: 10
+                    }}
+                }})
             }})
             .on('markgeocode', function(e) {{
                 const latlng = e.geocode.center;
                 map.setView(latlng, 13);
-                L.marker(latlng).addTo(map);
-            }})
-            .addTo(map);
+                
+                // Crear marcador en la ubicación buscada
+                if (puntoSeleccionado) {{
+                    map.removeLayer(puntoSeleccionado);
+                }}
+                
+                puntoSeleccionado = L.marker(latlng, {{
+                    icon: L.icon({{
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    }})
+                }}).addTo(map);
+                
+                // Actualizar coordenadas
+                document.getElementById('selected-lat').textContent = latlng.lat.toFixed(4);
+                document.getElementById('selected-lng').textContent = latlng.lng.toFixed(4);
+            }});
+            
+            // Mover el control de búsqueda a una posición personalizada
+            geocoder.addTo(map);
+            
+            // Reposicionar el control de búsqueda después de agregarlo
+            setTimeout(() => {{
+                const geocoderContainer = document.querySelector('.leaflet-control-geocoder');
+                if (geocoderContainer) {{
+                    // Asegurarse de que el input tenga un placeholder
+                    const input = geocoderContainer.querySelector('input');
+                    if (input) {{
+                        input.placeholder = "Ingrese una localidad...";
+                    }}
+                }}
+            }}, 100);
             
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
@@ -367,11 +472,11 @@ with col1:
             // Colección de polígonos para los productores
             const poligonosLayer = L.layerGroup().addTo(map);
             
+            // Capa para los archivos KML/Shapefile importados
+            const archivosLayer = L.layerGroup().addTo(map);
+            
             // Array de colores para polígonos
             const colors = {colors_json};
-            
-            // Variable para guardar los polígonos cercanos
-            let poligonosCercanos = [];
             
             // Función para dibujar polígonos de productores
             function dibujarPoligonos(poligonos) {{
@@ -486,7 +591,15 @@ with col1:
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Enviar datos de vuelta a Streamlit
+                    // Crear un evento personalizado para streamlit
+                    const event = new CustomEvent('streamlit:coordsSelected', {{
+                        detail: {{ lat: lat, lng: lng }}
+                    }});
+                    
+                    // Disparar el evento
+                    window.dispatchEvent(event);
+                    
+                    // También intentar enviar los datos a través de postMessage
                     window.parent.postMessage({{
                         type: 'streamlit:setComponentValue',
                         value: {{ lat: lat, lng: lng }}
@@ -513,51 +626,101 @@ with col1:
             // Función para cargar archivo KML/KMZ/Shapefile
             function cargarArchivo(tipo, datos) {{
                 try {{
+                    // Limpiar la capa de archivos previos
+                    archivosLayer.clearLayers();
+                    
                     if (tipo.includes('kml')) {{
                         // Convertir de base64 a texto
                         const texto = atob(datos);
+                        
                         // Crear un objeto DOM del KML
                         const parser = new DOMParser();
                         const kml = parser.parseFromString(texto, 'text/xml');
+                        
                         // Convertir a GeoJSON usando toGeoJSON
                         const geojson = toGeoJSON.kml(kml);
                         
                         // Agregar al mapa
-                        L.geoJSON(geojson, {{
-                            style: {{
-                                color: '#ff9900',
-                                weight: 2,
-                                fillOpacity: 0.2
+                        const kmlLayer = L.geoJSON(geojson, {{
+                            style: function(feature) {{
+                                return {{
+                                    color: '#ff9900',
+                                    weight: 3,
+                                    opacity: 1,
+                                    fillOpacity: 0.3,
+                                    fillColor: '#ffcc33'
+                                }};
+                            }},
+                            onEachFeature: function(feature, layer) {{
+                                if (feature.properties && feature.properties.name) {{
+                                    layer.bindPopup(feature.properties.name);
+                                }}
                             }}
-                        }}).addTo(map);
+                        }}).addTo(archivosLayer);
                         
                         // Hacer zoom al extent
-                        if (geojson.features.length > 0) {{
+                        if (geojson.features && geojson.features.length > 0) {{
                             const bounds = L.geoJSON(geojson).getBounds();
                             map.fitBounds(bounds);
                         }}
                         
                     }} else if (tipo.includes('zip') || tipo.includes('shp')) {{
                         // Usar shpjs para cargar el shapefile
-                        shp(datos).then(function(geojson) {{
-                            L.geoJSON(geojson, {{
-                                style: {{
-                                    color: '#ff9900',
-                                    weight: 2,
-                                    fillOpacity: 0.2
+                        const arrayBuffer = base64ToArrayBuffer(datos);
+                        
+                        shp(arrayBuffer).then(function(geojson) {{
+                            const shpLayer = L.geoJSON(geojson, {{
+                                style: function(feature) {{
+                                    return {{
+                                        color: '#ff9900',
+                                        weight: 3,
+                                        opacity: 1,
+                                        fillOpacity: 0.3,
+                                        fillColor: '#ffcc33'
+                                    }};
+                                }},
+                                onEachFeature: function(feature, layer) {{
+                                    // Crear un popup con todas las propiedades
+                                    let popupContent = '<div class="shapefile-popup">';
+                                    
+                                    if (feature.properties) {{
+                                        for (const key in feature.properties) {{
+                                            const value = feature.properties[key];
+                                            popupContent += `<b>${{key}}:</b> ${{value}}<br>`;
+                                        }}
+                                    }}
+                                    
+                                    popupContent += '</div>';
+                                    layer.bindPopup(popupContent);
                                 }}
-                            }}).addTo(map);
+                            }}).addTo(archivosLayer);
                             
                             // Hacer zoom al extent
                             if (geojson.features && geojson.features.length > 0) {{
-                                const bounds = L.geoJSON(geojson).getBounds();
-                                map.fitBounds(bounds);
+                                try {{
+                                    const bounds = L.geoJSON(geojson).getBounds();
+                                    map.fitBounds(bounds);
+                                }} catch (e) {{
+                                    console.error('Error al ajustar los límites:', e);
+                                }}
                             }}
+                        }}).catch(function(error) {{
+                            console.error('Error al procesar el shapefile:', error);
                         }});
                     }}
                 }} catch (error) {{
                     console.error('Error al cargar el archivo:', error);
                 }}
+            }}
+            
+            // Función para convertir Base64 a ArrayBuffer
+            function base64ToArrayBuffer(base64) {{
+                const binaryString = atob(base64);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {{
+                    bytes[i] = binaryString.charCodeAt(i);
+                }}
+                return bytes.buffer;
             }}
             
             // Cargar archivo si existe
@@ -587,11 +750,35 @@ with col1:
                 map.setView([lat, lng], 15);
             }
             """ if st.session_state.punto_seleccionado else ""}
+            
+            // Escuchar evento personalizado para coordenadas
+            window.addEventListener('streamlit:coordsSelected', function(e) {{
+                // Enviamos mediante cookies también para mayor compatibilidad
+                document.cookie = `selected_lat=${{e.detail.lat}}; path=/;`;
+                document.cookie = `selected_lng=${{e.detail.lng}}; path=/;`;
+                
+                // Recargar la página con parámetros
+                const url = new URL(window.location.href);
+                url.searchParams.set('lat', e.detail.lat);
+                url.searchParams.set('lng', e.detail.lng);
+                window.location.href = url.toString();
+            }});
         </script>
         """
         
         # Mostrar el mapa con Leaflet
         components_result = st.components.v1.html(mapa_html, height=600)
+        
+        # Verificar si hay parámetros de coordenadas en la URL
+        query_params = st.experimental_get_query_params()
+        if 'lat' in query_params and 'lng' in query_params:
+            try:
+                lat = float(query_params['lat'][0])
+                lng = float(query_params['lng'][0])
+                st.session_state.punto_seleccionado = (lat, lng)
+                st.session_state.busqueda_realizada = True
+            except:
+                pass
         
         # Procesar los resultados del componente HTML
         if isinstance(components_result, dict) and 'lat' in components_result and 'lng' in components_result:
@@ -689,11 +876,11 @@ with col2:
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
-1. **Selección en mapa**: Haz clic en cualquier punto del mapa.
-2. **Usar coordenadas**: Haz clic en el botón grande "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
-3. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
-4. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
-5. **Radio de búsqueda**: Ajusta el radio para ver productores a mayor o menor distancia (0.1 a 100 km).
-6. **Búsqueda de localidad**: Usa el buscador en la esquina superior derecha del mapa.
+1. **Buscar localidad**: Usa la barra de búsqueda en la parte superior del mapa.
+2. **Selección en mapa**: Haz clic en cualquier punto del mapa.
+3. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
+4. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
+5. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
+6. **Radio de búsqueda**: Ajusta o edita directamente el radio para ver productores a mayor o menor distancia.
 7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral.
 """)
