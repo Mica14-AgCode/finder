@@ -3,35 +3,39 @@ import pandas as pd
 import math
 import os
 import json
+import time
 
-# Configuración de la página - forzar reinicio si ya hay duplicación
-st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
+# Configuración de la página - solo títulos esenciales
+st.set_page_config(
+    page_title="Visor de Productores Agrícolas", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Título de la aplicación (único)
-st.title("Visor de Productores Agrícolas")
+# Título principal (único)
+st.write("# Visor de Productores Agrícolas")
 
-# Ruta al archivo CSV
+# Constantes
 RUTA_CSV = "datos_productores.csv"
 
-# Inicializar variables de estado
+# Inicializar variables de estado (solo las necesarias)
 if 'punto_seleccionado' not in st.session_state:
     st.session_state.punto_seleccionado = None
 if 'radio_busqueda' not in st.session_state:
     st.session_state.radio_busqueda = 200.0
 if 'mostrar_resultado' not in st.session_state:
     st.session_state.mostrar_resultado = False
+if 'productores_cercanos' not in st.session_state:
+    st.session_state.productores_cercanos = []
 
 # Funciones básicas
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
     """Calcula la distancia en kilómetros entre dos puntos usando la fórmula de Haversine"""
-    # Radio de la Tierra en km
-    R = 6371.0
+    R = 6371.0  # Radio de la Tierra en km
     
     # Convertir coordenadas a radianes
-    lat1_rad = math.radians(lat1)
-    lon1_rad = math.radians(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
     
     # Diferencias de latitud y longitud
     dlon = lon2_rad - lon1_rad
@@ -40,26 +44,20 @@ def calcular_distancia_km(lat1, lon1, lat2, lon2):
     # Fórmula de Haversine
     a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    distancia = R * c
     
-    return distancia
+    return R * c  # Distancia en km
 
 def punto_en_poligono(latitud, longitud, poligono_wkt):
-    """
-    Verifica si un punto está dentro de un polígono WKT.
-    Implementación simple del algoritmo de "ray casting".
-    """
+    """Verifica si un punto está dentro de un polígono WKT (algoritmo ray casting)"""
     if not poligono_wkt or not isinstance(poligono_wkt, str):
         return False
     
     try:
-        # Extraer las coordenadas del polígono WKT
+        # Extraer coordenadas del polígono
         coords_str = poligono_wkt.replace('POLYGON', '').replace('((', '').replace('))', '').strip()
-        
-        # Separar las coordenadas por coma
         coords_pares = coords_str.split(',')
         
-        # Convertir a pares de (lon, lat)
+        # Convertir a pares (lon, lat)
         vertices = []
         for par in coords_pares:
             valores = par.strip().split()
@@ -67,54 +65,48 @@ def punto_en_poligono(latitud, longitud, poligono_wkt):
                 lon, lat = float(valores[0]), float(valores[1])
                 vertices.append((lon, lat))
         
-        # Algoritmo de ray casting
+        # Algoritmo ray casting
         inside = False
         n = len(vertices)
-        
-        # Si no hay suficientes vértices, no es un polígono válido
-        if n < 3:
+        if n < 3:  # No es un polígono válido
             return False
         
         j = n - 1
         for i in range(n):
-            # Comprobación de si el punto está dentro usando ray casting
             if ((vertices[i][1] > latitud) != (vertices[j][1] > latitud)) and \
                (longitud < (vertices[j][0] - vertices[i][0]) * (latitud - vertices[i][1]) / (vertices[j][1] - vertices[i][1]) + vertices[i][0]):
                 inside = not inside
             j = i
         
         return inside
-    except Exception as e:
+    except:
         return False
 
 def wkt_a_coordenadas(wkt_str):
-    """Convierte un string WKT de polígono a coordenadas [[lat, lng], ...]"""
+    """Convierte un string WKT de polígono a coordenadas [[lat, lng], ...] para Leaflet"""
     if not wkt_str or not isinstance(wkt_str, str):
         return []
     
     try:
-        # Extraer las coordenadas entre paréntesis (ignorando POLYGON, etc.)
+        # Extraer coordenadas
         coords_str = wkt_str.replace('POLYGON', '').replace('((', '').replace('))', '').strip()
-        
-        # Separar las coordenadas por coma
         coords_pares = coords_str.split(',')
         
-        # Convertir a pares de [lat, lng] para Leaflet (invierte el orden)
+        # Convertir a formato Leaflet [lat, lng]
         coords = []
         for par in coords_pares:
             valores = par.strip().split()
             if len(valores) >= 2:
-                # En WKT es lon lat, pero en Leaflet necesitamos lat lon
+                # WKT es lon,lat pero Leaflet necesita lat,lon
                 lon, lat = float(valores[0]), float(valores[1])
                 coords.append([lat, lon])
         
         return coords
-    except Exception as e:
+    except:
         return []
 
 def crear_datos_ejemplo():
-    """Crea datos de ejemplo cuando no se puede cargar el CSV"""
-    st.info("Usando datos de ejemplo para demostración")
+    """Datos de ejemplo cuando no se puede cargar el CSV"""
     return pd.DataFrame({
         'cuit': ['20123456789', '30987654321', '33444555667', '27888999001'],
         'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2', 'Productor Ejemplo 3', 'Productor Ejemplo 4'],
@@ -135,22 +127,20 @@ def crear_datos_ejemplo():
 def cargar_datos(ruta_archivo=RUTA_CSV):
     """Carga los datos de productores desde un archivo CSV"""
     try:
-        # Verificar si el archivo existe
+        # Verificar existencia del archivo
         if not os.path.exists(ruta_archivo):
             return crear_datos_ejemplo()
         
-        # Cargar el CSV
+        # Cargar CSV
         df = pd.read_csv(ruta_archivo)
         
-        # Verificar las columnas necesarias
+        # Verificar columnas necesarias
         columnas_requeridas = ['cuit', 'titular', 'latitud', 'longitud']
-        columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
-        
-        if columnas_faltantes:
+        if not all(col in df.columns for col in columnas_requeridas):
             return crear_datos_ejemplo()
         
         return df
-    except Exception as e:
+    except:
         return crear_datos_ejemplo()
 
 def encontrar_productor_contenedor(lat, lon, datos):
@@ -177,12 +167,11 @@ def encontrar_productor_contenedor(lat, lon, datos):
     return productor_contenedor
 
 def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
-    """Encuentra productores cercanos a un punto dado dentro de un radio específico."""
+    """Encuentra productores cercanos a un punto dado dentro de un radio específico"""
     cercanos = []
-    # Para agrupar por CUIT
-    cuits_encontrados = set()
+    cuits_encontrados = set()  # Para evitar duplicados
     
-    # Primero verificar si está dentro de algún polígono
+    # Verificar si está dentro de algún polígono
     productor_contenedor = encontrar_productor_contenedor(lat, lon, datos)
     if productor_contenedor:
         cercanos.append(productor_contenedor)
@@ -191,10 +180,10 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
     # Buscar otros productores cercanos por distancia
     for idx, fila in datos.iterrows():
         if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-            # Si ya encontramos este CUIT, saltarlo
+            # Si ya encontramos este CUIT, continuar
             if fila['cuit'] in cuits_encontrados:
                 continue
-                
+            
             # Calcular distancia
             distancia = calcular_distancia_km(
                 lat, lon, 
@@ -202,7 +191,6 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
             )
             
             if distancia <= radio_km:
-                # Agregar a resultado y marcar como encontrado
                 cercanos.append({
                     'cuit': fila['cuit'],
                     'titular': fila['titular'] if 'titular' in fila else 'No disponible',
@@ -218,34 +206,14 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
                 cuits_encontrados.add(fila['cuit'])
     
     # Ordenar por distancia
-    cercanos = sorted(cercanos, key=lambda x: x['distancia'])
-    
-    return cercanos
+    return sorted(cercanos, key=lambda x: x['distancia'])
 
-# Cargar datos
+# Obtener datos (una sola vez)
 datos_productores = cargar_datos()
 
-# Si hay datos, mostrar información básica
-if not datos_productores.empty:
-    # Contar CUITs únicos
-    cuits_unicos = datos_productores['cuit'].nunique()
-    st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
-
-# Panel lateral
+# Panel lateral simple
 with st.sidebar:
-    st.header("Instrucciones")
-    st.info(f"""
-    **Configuración:**
-    
-    El archivo CSV debe:
-    1. Llamarse '{RUTA_CSV}'
-    2. Estar en la misma carpeta que esta aplicación
-    3. Contener al menos: 'cuit', 'titular', 'latitud', 'longitud'
-    4. Opcionalmente: 'poligono' en formato WKT para mostrar las parcelas
-    """)
-    
-    # Filtros
-    st.header("Filtros")
+    st.write("## Filtros")
     
     # Radio de búsqueda
     radio_busqueda = st.slider(
@@ -256,30 +224,63 @@ with st.sidebar:
         step=1.0
     )
     st.session_state.radio_busqueda = radio_busqueda
+    
+    # Información básica
+    st.write("## Información")
+    if not datos_productores.empty:
+        cuits_unicos = datos_productores['cuit'].nunique()
+        st.success(f"{len(datos_productores)} parcelas de {cuits_unicos} productores")
+    
+    st.info("""
+    **Instrucciones:**
+    
+    1. Haz clic en el mapa para seleccionar un punto
+    2. Haz clic en "Buscar" para encontrar productores
+    3. Ajusta el radio de búsqueda si es necesario
+    """)
 
-# Layout principal (única vez)
+# Verificar parámetros URL (sin hacer experimental_rerun)
+try:
+    # Ver si tenemos parámetros de URL
+    params = st.experimental_get_query_params()
+    if 'lat' in params and 'lng' in params:
+        lat = float(params['lat'][0])
+        lon = float(params['lng'][0])
+        
+        # Actualizar estado sin rerun
+        st.session_state.punto_seleccionado = (lat, lon)
+        st.session_state.mostrar_resultado = True
+        
+        # Buscar productores cercanos
+        st.session_state.productores_cercanos = encontrar_cuits_cercanos(
+            lat, lon, datos_productores, radio_km=st.session_state.radio_busqueda
+        )
+        
+        # Limpiar parámetros sin rerun
+        st.experimental_set_query_params()
+except:
+    # Ignorar errores de parámetros silenciosamente
+    pass
+
+# Layout principal (2 columnas)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.subheader("Mapa Interactivo")
+    st.write("## Mapa Interactivo")
     
     # Calcular centro del mapa
-    if datos_productores.empty:
-        centro_lat = -34.0
-        centro_lon = -60.0
-    else:
-        centro_lat = datos_productores['latitud'].mean()
-        centro_lon = datos_productores['longitud'].mean()
+    centro_lat = datos_productores['latitud'].mean() if not datos_productores.empty else -34.0
+    centro_lon = datos_productores['longitud'].mean() if not datos_productores.empty else -60.0
     
-    # Preparar polígonos para la respuesta
+    # Preparar datos para el mapa
     poligonos_result = []
-    if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
-        lat, lon = st.session_state.punto_seleccionado
-        productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+    productores_para_marcadores = []
+    if st.session_state.punto_seleccionado and st.session_state.productores_cercanos:
+        productores_cercanos = st.session_state.productores_cercanos
         
-        # Solo incluir polígonos de productores cercanos
-        cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
+        # Incluir polígonos de productores cercanos
         if 'poligono' in datos_productores.columns:
+            cuits_cercanos = [p['cuit'] for p in productores_cercanos]
             for idx, fila in datos_productores.iterrows():
                 if pd.notna(fila['poligono']) and fila['cuit'] in cuits_cercanos:
                     coords = wkt_a_coordenadas(fila['poligono'])
@@ -292,18 +293,17 @@ with col1:
                             'longitud': float(fila['longitud'])
                         })
         
-        # Si no hay polígonos, incluir marcadores de productores
-        if not poligonos_result:
-            for productor in productores_cercanos:
-                poligonos_result.append({
-                    'marker': True,
-                    'cuit': productor['cuit'],
-                    'titular': productor['titular'],
-                    'latitud': float(productor['latitud']),
-                    'longitud': float(productor['longitud'])
-                })
+        # Añadir marcadores para todos los productores cercanos
+        for productor in productores_cercanos:
+            productores_para_marcadores.append({
+                'cuit': productor['cuit'],
+                'titular': productor['titular'],
+                'latitud': float(productor['latitud']),
+                'longitud': float(productor['longitud']),
+                'contenedor': productor.get('contenedor', False)
+            })
     
-    # Contenido HTML para el mapa Leaflet
+    # Crear mapa Leaflet simplificado
     mapa_html = f"""
     <!DOCTYPE html>
     <html>
@@ -323,11 +323,11 @@ with col1:
                 border-radius: 8px;
                 box-shadow: 0 0 5px rgba(0,0,0,0.1);
             }}
-            .coord-value {{
+            #coords-display {{
                 font-weight: bold;
                 color: #333;
             }}
-            #use-coords-btn {{
+            #search-btn {{
                 margin-top: 10px;
                 padding: 8px 16px;
                 background-color: #4CAF50;
@@ -337,76 +337,48 @@ with col1:
                 cursor: pointer;
                 font-weight: bold;
             }}
-            #use-coords-btn:hover {{
+            #search-btn:hover {{
                 background-color: #45a049;
-            }}
-            .status-message {{
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                padding: 15px 25px;
-                background-color: rgba(0, 0, 0, 0.8);
-                color: #fff;
-                border-radius: 5px;
-                z-index: 2000;
-                display: none;
             }}
         </style>
     </head>
     <body>
         <div id="map"></div>
         <div id="info-panel">
-            <div>Coordenadas seleccionadas: <span id="coords-display">Haz clic en el mapa</span></div>
-            <button id="use-coords-btn">Buscar en estas coordenadas</button>
+            <div>Coordenadas: <span id="coords-display">Haz clic en el mapa</span></div>
+            <button id="search-btn">Buscar</button>
         </div>
-        <div id="status-message" class="status-message"></div>
         
         <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
         <script>
             // Variables globales
             let map;
             let selectedMarker = null;
-            let polygonsLayer = null;
-            let markersLayer = null;
+            let polygonsLayer, markersLayer;
             let selectedCoords = null;
             
-            // Datos para el mapa
+            // Datos
             const poligonos = {json.dumps(poligonos_result)};
-            const mostrarResultado = {"true" if st.session_state.mostrar_resultado else "false"};
+            const marcadores = {json.dumps(productores_para_marcadores)};
+            const puntoSeleccionado = {"[" + str(st.session_state.punto_seleccionado[0]) + "," + str(st.session_state.punto_seleccionado[1]) + "]" if st.session_state.punto_seleccionado else "null"};
             
-            // Mostrar mensaje temporal
-            function showMessage(message, duration = 3000) {{
-                const msgEl = document.getElementById('status-message');
-                msgEl.textContent = message;
-                msgEl.style.display = 'block';
-                
-                setTimeout(() => {{
-                    msgEl.style.display = 'none';
-                }}, duration);
-            }}
-            
-            // Inicializar el mapa cuando cargue la página
-            document.addEventListener('DOMContentLoaded', initMap);
-            
-            function initMap() {{
-                // Crear el mapa
+            // Inicializar mapa
+            document.addEventListener('DOMContentLoaded', () => {{
+                // Crear mapa
                 map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
                 
-                // Agregar capa base - Satélite
+                // Capas base
                 const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
                     attribution: 'Tiles &copy; Esri'
                 }});
                 
-                // Agregar capa base - OpenStreetMap
                 const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }});
                 
-                // Agregar capas al mapa
+                // Añadir capas
                 satelliteLayer.addTo(map);
                 
-                // Configurar control de capas
                 const baseMaps = {{
                     "Satélite": satelliteLayer,
                     "Mapa": osmLayer
@@ -414,63 +386,73 @@ with col1:
                 
                 L.control.layers(baseMaps).addTo(map);
                 
-                // Capas para polígonos y marcadores
+                // Capas para resultados
                 polygonsLayer = L.layerGroup().addTo(map);
                 markersLayer = L.layerGroup().addTo(map);
                 
-                // Dibujar polígonos solo si hay resultados de búsqueda
-                if (mostrarResultado && poligonos.length > 0) {{
-                    dibujarResultados();
-                }}
+                // Mostrar polígonos y marcadores si hay
+                mostrarResultados();
                 
                 // Evento de clic en el mapa
-                map.on('click', function(e) {{
+                map.on('click', e => {{
                     const lat = e.latlng.lat;
                     const lng = e.latlng.lng;
                     
-                    // Actualizar coordenadas seleccionadas
                     selectedCoords = [lat, lng];
                     document.getElementById('coords-display').textContent = `Lat: ${{lat.toFixed(6)}}, Lng: ${{lng.toFixed(6)}}`;
                     
-                    // Actualizar marcador
                     if (selectedMarker) {{
                         map.removeLayer(selectedMarker);
                     }}
+                    
                     selectedMarker = L.marker([lat, lng], {{
-                        zIndexOffset: 1000  // Asegurar que esté encima de otros marcadores
+                        zIndexOffset: 1000
                     }}).addTo(map);
                 }});
                 
-                // Evento para botón de búsqueda
-                document.getElementById('use-coords-btn').addEventListener('click', function() {{
+                // Evento de botón de búsqueda
+                document.getElementById('search-btn').addEventListener('click', () => {{
                     if (!selectedCoords) {{
-                        showMessage('Primero selecciona un punto en el mapa');
+                        alert('Primero selecciona un punto en el mapa');
                         return;
                     }}
                     
-                    buscarCoordenadas(selectedCoords[0], selectedCoords[1]);
+                    // Redireccionar con coordenadas
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('lat', selectedCoords[0]);
+                    url.searchParams.set('lng', selectedCoords[1]);
+                    window.location.href = url.toString();
                 }});
                 
-                // Si hay un punto seleccionado anteriormente, mostrarlo
-                const puntoSeleccionado = {"[" + str(st.session_state.punto_seleccionado[0]) + "," + str(st.session_state.punto_seleccionado[1]) + "]" if st.session_state.punto_seleccionado else "null"};
+                // Mostrar punto seleccionado previamente
                 if (puntoSeleccionado) {{
                     selectedCoords = puntoSeleccionado;
-                    document.getElementById('coords-display').textContent = `Lat: ${{puntoSeleccionado[0].toFixed(6)}}, Lng: ${{puntoSeleccionado[1].toFixed(6)}}`;
+                    document.getElementById('coords-display').textContent = 
+                        `Lat: ${{puntoSeleccionado[0].toFixed(6)}}, Lng: ${{puntoSeleccionado[1].toFixed(6)}}`;
+                    
                     selectedMarker = L.marker([puntoSeleccionado[0], puntoSeleccionado[1]], {{
                         zIndexOffset: 1000
                     }}).addTo(map);
+                    
+                    // Centrar en el punto y resultados
+                    if (poligonos.length > 0 || marcadores.length > 0) {{
+                        centrarEnResultados();
+                    }} else {{
+                        map.setView([puntoSeleccionado[0], puntoSeleccionado[1]], 12);
+                    }}
                 }}
-            }}
+            }});
             
-            // Función para dibujar polígonos y marcadores
-            function dibujarResultados() {{
+            // Función para mostrar resultados
+            function mostrarResultados() {{
+                // Limpiar capas
                 polygonsLayer.clearLayers();
                 markersLayer.clearLayers();
                 
-                poligonos.forEach(elemento => {{
-                    if (elemento.coords && elemento.coords.length > 0) {{
-                        // Dibujar polígono
-                        const polygon = L.polygon(elemento.coords, {{
+                // Mostrar polígonos
+                poligonos.forEach(poligono => {{
+                    if (poligono.coords && poligono.coords.length > 0) {{
+                        const polygon = L.polygon(poligono.coords, {{
                             color: '#3388ff',
                             weight: 2,
                             opacity: 0.7,
@@ -478,192 +460,139 @@ with col1:
                         }}).addTo(polygonsLayer);
                         
                         polygon.bindPopup(`
-                            <strong>CUIT:</strong> ${{elemento.cuit}}<br>
-                            <strong>Razón Social:</strong> ${{elemento.titular}}<br>
-                            <button onclick="buscarCoordenadas(${{elemento.latitud}}, ${{elemento.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                Buscar este productor
-                            </button>
-                        `);
-                    }}
-                    
-                    // Si es un marcador o si tiene coordenadas
-                    if (elemento.marker || (elemento.latitud && elemento.longitud)) {{
-                        L.marker([elemento.latitud, elemento.longitud], {{
-                            title: elemento.titular
-                        }}).addTo(markersLayer).bindPopup(`
-                            <strong>CUIT:</strong> ${{elemento.cuit}}<br>
-                            <strong>Razón Social:</strong> ${{elemento.titular}}<br>
-                            <button onclick="buscarCoordenadas(${{elemento.latitud}}, ${{elemento.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
-                                Buscar este productor
-                            </button>
+                            <strong>CUIT:</strong> ${{poligono.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{poligono.titular}}
                         `);
                     }}
                 }});
+                
+                // Mostrar marcadores
+                marcadores.forEach(marcador => {{
+                    // Color diferente si contiene el punto
+                    const markerIcon = marcador.contenedor ? 
+                        new L.Icon({{ 
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34],
+                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                            shadowSize: [41, 41]
+                        }}) : 
+                        new L.Icon({{
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34],
+                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                            shadowSize: [41, 41]
+                        }});
+                    
+                    L.marker([marcador.latitud, marcador.longitud], {{
+                        title: marcador.titular,
+                        icon: markerIcon
+                    }}).addTo(markersLayer).bindPopup(`
+                        <strong>CUIT:</strong> ${{marcador.cuit}}<br>
+                        <strong>Razón Social:</strong> ${{marcador.titular}}<br>
+                        ${{marcador.contenedor ? '<strong>Contiene el punto seleccionado</strong>' : ''}}
+                    `);
+                }});
             }}
             
-            // Función para buscar en coordenadas
-            function buscarCoordenadas(lat, lng) {{
-                // Mostrar mensaje de búsqueda
-                showMessage(`Buscando productores cercanos a Lat: ${{lat.toFixed(6)}}, Lng: ${{lng.toFixed(6)}}...`);
+            // Función para centrar en los resultados
+            function centrarEnResultados() {{
+                // Si hay polígonos, centrar en ellos
+                if (poligonos.length > 0) {{
+                    try {{
+                        const bounds = L.featureGroup(Array.from(polygonsLayer.getLayers())).getBounds();
+                        map.fitBounds(bounds, {{ padding: [50, 50] }});
+                        return;
+                    }} catch (e) {{
+                        console.log("Error al centrar en polígonos:", e);
+                    }}
+                }}
                 
-                // Redirigir a la misma página con parámetros
-                const urlBase = window.location.pathname;
-                const params = new URLSearchParams(window.location.search);
+                // Si hay marcadores, centrar en ellos
+                if (marcadores.length > 0) {{
+                    try {{
+                        const bounds = L.featureGroup(Array.from(markersLayer.getLayers())).getBounds();
+                        map.fitBounds(bounds, {{ padding: [50, 50] }});
+                        return;
+                    }} catch (e) {{
+                        console.log("Error al centrar en marcadores:", e);
+                    }}
+                }}
                 
-                // Añadir parámetros de coordenadas y acción
-                params.set('lat', lat.toString());
-                params.set('lng', lng.toString());
-                params.set('action', 'search');
-                
-                // Construir URL completa
-                const url = `${{urlBase}}?${{params.toString()}}`;
-                
-                // Redirigir
-                window.location.href = url;
+                // Si nada funciona, centrar en el punto seleccionado
+                if (puntoSeleccionado) {{
+                    map.setView([puntoSeleccionado[0], puntoSeleccionado[1]], 12);
+                }}
             }}
         </script>
     </body>
     </html>
     """
     
-    # Mostrar el mapa
+    # Renderizar mapa
     st.components.v1.html(mapa_html, height=600, scrolling=False)
 
 with col2:
-    st.subheader("Resultados de la búsqueda")
-    
-    # Verificar si hay parámetros en la URL para realizar la búsqueda
-    params_procesados = False
-    
-    # Intento usando st.query_params (versión más reciente)
-    try:
-        query_params = st.query_params
-        if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
-            try:
-                lat = float(query_params['lat'])
-                lon = float(query_params['lng'])
-                action = query_params['action']
-                
-                # Solo realizar la búsqueda si la acción es "search"
-                if action == "search":
-                    st.session_state.punto_seleccionado = (lat, lon)
-                    st.session_state.mostrar_resultado = True
-                    
-                    # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                    for key in list(query_params.keys()):
-                        del query_params[key]
-                    
-                    params_procesados = True
-                    
-                    # No usar experimental_rerun, puede causar problemas
-            except:
-                pass
-    except:
-        pass
-    
-    # Fallback para versiones anteriores de Streamlit
-    if not params_procesados:
-        try:
-            query_params = st.experimental_get_query_params()
-            if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
-                try:
-                    lat = float(query_params['lat'][0])
-                    lon = float(query_params['lng'][0])
-                    action = query_params['action'][0]
-                    
-                    # Solo realizar la búsqueda si la acción es "search"
-                    if action == "search":
-                        st.session_state.punto_seleccionado = (lat, lon)
-                        st.session_state.mostrar_resultado = True
-                        
-                        # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                        st.experimental_set_query_params()
-                        
-                        params_procesados = True
-                except:
-                    pass
-        except:
-            pass
-    
-    # Mostrar resultados si tenemos un punto seleccionado
+    # Mostrar resultados de búsqueda
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
         lat, lon = st.session_state.punto_seleccionado
         
-        # Mostrar las coordenadas del punto seleccionado
-        st.success(f"Punto seleccionado: Lat {lat:.6f}, Lng {lon:.6f}")
+        # Mostrar punto seleccionado
+        st.write(f"### Punto seleccionado")
+        st.success(f"Lat: {lat:.6f}, Lng: {lon:.6f}")
         
-        # Buscar productores cercanos
-        with st.spinner(f"Buscando productores en un radio de {radio_busqueda} km..."):
-            productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+        # Usar resultados almacenados o calcular si no existen
+        if not st.session_state.productores_cercanos:
+            with st.spinner(f"Buscando productores en {radio_busqueda} km..."):
+                st.session_state.productores_cercanos = encontrar_cuits_cercanos(
+                    lat, lon, datos_productores, radio_km=radio_busqueda
+                )
+        
+        productores_cercanos = st.session_state.productores_cercanos
         
         if productores_cercanos:
-            # Contar razones sociales únicas
-            cuits_unicos = len(set(productor['cuit'] for productor in productores_cercanos))
-            st.success(f"Se encontraron {cuits_unicos} productores en un radio de {radio_busqueda} km")
+            # Mostrar conteo
+            cuits_unicos = len(set(p['cuit'] for p in productores_cercanos))
+            st.write(f"### Resultados")
+            st.success(f"{cuits_unicos} productores en {radio_busqueda} km")
             
             # Productor más cercano o contenedor
             mas_cercano = productores_cercanos[0]
             
+            # Destacar productor principal
             if mas_cercano.get('contenedor', False):
-                st.subheader("Productor que contiene este punto:")
+                st.info(f"**El punto está dentro del campo de:**")
             else:
-                st.subheader("Productor más cercano:")
+                st.info(f"**Productor más cercano:**")
                 
-            st.markdown(f"""
+            st.write(f"""
             **CUIT:** {mas_cercano['cuit']}  
             **Razón Social:** {mas_cercano['titular']}  
             **Distancia:** {mas_cercano['distancia']} km  
             **Localidad:** {mas_cercano.get('localidad', 'No disponible')}  
             **Superficie:** {mas_cercano.get('superficie', 'No disponible')} ha  
-            **Coordenadas:** Lat {mas_cercano['latitud']:.6f}, Lng {mas_cercano['longitud']:.6f}
             """)
             
-            # Tabla de todos los productores cercanos
-            st.subheader(f"Todos los productores (radio {radio_busqueda} km):")
+            # Tabla de todos los productores
+            st.write(f"### Listado completo")
             
-            # Crear un DataFrame para la tabla
-            tabla_data = []
-            for productor in productores_cercanos:
-                tabla_data.append({
-                    "CUIT": productor['cuit'],
-                    "Razón Social": productor['titular'],
-                    "Distancia (km)": productor['distancia'],
-                    "Localidad": productor.get('localidad', ''),
-                    "Contiene punto": "Sí" if productor.get('contenedor', False) else "No"
-                })
+            # Crear tabla
+            tabla_data = [
+                {
+                    "CUIT": p['cuit'],
+                    "Razón Social": p['titular'],
+                    "Distancia (km)": p['distancia'],
+                    "Localidad": p.get('localidad', ''),
+                    "Contiene punto": "Sí" if p.get('contenedor', False) else "No"
+                }
+                for p in productores_cercanos
+            ]
             
-            # Mostrar tabla
             st.dataframe(pd.DataFrame(tabla_data), use_container_width=True)
-            
-            # Mostrar detalles expandibles
-            for i, productor in enumerate(productores_cercanos[:10]):  # Limitar a los 10 más cercanos
-                titulo = f"{i+1}. {productor['titular']} ({productor['distancia']} km)"
-                if productor.get('contenedor', False):
-                    titulo += " - Contiene el punto"
-                    
-                with st.expander(titulo):
-                    st.markdown(f"""
-                    **CUIT:** {productor['cuit']}  
-                    **Razón Social:** {productor['titular']}  
-                    **RENSPA:** {productor.get('renspa', 'No disponible')}  
-                    **Localidad:** {productor.get('localidad', 'No disponible')}  
-                    **Superficie:** {productor.get('superficie', 'No disponible')} ha  
-                    **Distancia:** {productor['distancia']} km  
-                    **Coordenadas:** Lat {productor['latitud']:.6f}, Lng {productor['longitud']:.6f}
-                    **Tiene polígono:** {"Sí" if productor.get('poligono') else "No"}
-                    """)
         else:
-            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
+            st.warning(f"No se encontraron productores en {radio_busqueda} km")
     else:
-        st.info("Haz clic en el mapa para seleccionar un punto y buscar productores cercanos")
-
-# Instrucciones para usar el mapa (solo una vez al final)
-st.markdown("---")
-st.subheader("Instrucciones de uso")
-st.markdown("""
-1. **Selección de punto**: Haz clic en cualquier punto del mapa para seleccionarlo automáticamente.
-2. **Búsqueda**: Haz clic en el botón "Buscar en estas coordenadas" para encontrar productores cercanos.
-3. **Visualización de polígonos**: Los polígonos de los productores cercanos se mostrarán en el mapa tras la búsqueda.
-4. **Radio de búsqueda**: Ajusta el radio de búsqueda en el panel lateral para ampliar o reducir el área de búsqueda.
-5. **Interacción con polígonos**: Haz clic en un polígono para ver información del productor asociado.
-""")
+        st.info("Haz clic en el mapa para buscar productores cercanos.")
