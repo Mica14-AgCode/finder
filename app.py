@@ -3,6 +3,7 @@ import pandas as pd
 import math
 import json
 import base64
+import os
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -22,6 +23,8 @@ if 'archivo_cargado' not in st.session_state:
     st.session_state.archivo_cargado = None
 if 'radio_busqueda' not in st.session_state:
     st.session_state.radio_busqueda = 5.0
+if 'mostrar_resultados' not in st.session_state:
+    st.session_state.mostrar_resultados = False
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -51,25 +54,42 @@ def calcular_distancia_km(lat1, lon1, lat2, lon2):
 def cargar_datos(ruta_archivo=RUTA_CSV):
     """Carga los datos de productores desde un archivo CSV"""
     try:
+        # Verificar si el archivo existe
+        if not os.path.exists(ruta_archivo):
+            st.error(f"El archivo {ruta_archivo} no existe.")
+            return crear_datos_ejemplo()
+        
         # Cargar el CSV
         df = pd.read_csv(ruta_archivo)
+        
+        # Verificar las columnas necesarias
+        columnas_requeridas = ['cuit', 'titular', 'latitud', 'longitud']
+        columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
+        
+        if columnas_faltantes:
+            st.error(f"El archivo CSV no contiene las columnas necesarias: {', '.join(columnas_faltantes)}")
+            return crear_datos_ejemplo()
+        
         return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
-        # Crear datos de ejemplo
-        return pd.DataFrame({
-            'cuit': ['20123456789', '30987654321'],
-            'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2'],
-            'renspa': ['12.345.6.78901/01', '98.765.4.32109/02'],
-            'localidad': ['Localidad 1', 'Localidad 2'],
-            'superficie': [100, 150],
-            'longitud': [-60.0, -60.2],
-            'latitud': [-34.0, -34.2],
-            'poligono': [
-                "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
-                "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))"
-            ]
-        })
+        return crear_datos_ejemplo()
+
+def crear_datos_ejemplo():
+    """Crea datos de ejemplo cuando no se puede cargar el CSV"""
+    return pd.DataFrame({
+        'cuit': ['20123456789', '30987654321'],
+        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2'],
+        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02'],
+        'localidad': ['Localidad 1', 'Localidad 2'],
+        'superficie': [100, 150],
+        'longitud': [-60.0, -60.2],
+        'latitud': [-34.0, -34.2],
+        'poligono': [
+            "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
+            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))"
+        ]
+    })
 
 # Función para encontrar el CUIT más cercano a un punto
 def encontrar_cuit_mas_cercano(lat, lon, datos):
@@ -193,38 +213,16 @@ else:
     datos_filtrados = datos_productores
     st.sidebar.warning("No se encontró la columna 'titular' en los datos.")
 
-# Filtro por localidad si existe
-if 'localidad' in datos_productores.columns:
-    localidades = ["Todas"] + sorted(list(datos_productores['localidad'].unique()))
-    localidad_seleccionada = st.sidebar.selectbox("Filtrar por localidad:", localidades)
-    
-    if localidad_seleccionada != "Todas":
-        datos_filtrados = datos_filtrados[datos_filtrados['localidad'] == localidad_seleccionada]
-
-# Radio de búsqueda ajustable con mayor rango (ahora se puede editar directamente)
-radio_col1, radio_col2 = st.sidebar.columns([3, 1])
-with radio_col1:
-    radio_busqueda = st.slider(
-        "Radio de búsqueda (km):", 
-        min_value=0.1, 
-        max_value=100.0, 
-        value=st.session_state.radio_busqueda, 
-        step=0.1
-    )
-with radio_col2:
-    radio_input = st.number_input(
-        "Editar radio:",
-        min_value=0.1,
-        max_value=100.0,
-        value=radio_busqueda,
-        step=0.1,
-        format="%.1f"
-    )
-    
-# Actualizar radio_busqueda si se cambia manualmente
-if radio_input != radio_busqueda:
-    radio_busqueda = radio_input
-    st.session_state.radio_busqueda = radio_busqueda
+# Radio de búsqueda como un solo campo editable sin límite
+st.sidebar.subheader("Radio de búsqueda")
+radio_busqueda = st.sidebar.number_input(
+    "Radio de búsqueda (km):",
+    min_value=0.1,
+    value=st.session_state.radio_busqueda,
+    step=0.1,
+    format="%.1f"
+)
+st.session_state.radio_busqueda = radio_busqueda
 
 # Opción para cargar archivos KML/KMZ/SHP
 st.sidebar.header("Cargar archivos")
@@ -249,9 +247,22 @@ if archivo_subido is not None:
 # Layout principal
 col1, col2 = st.columns([3, 1])
 
+# Comprobar si hay parámetros de URL para las coordenadas
+params = st.query_params
+if "lat" in params and "lng" in params:
+    try:
+        lat = float(params["lat"][0])
+        lng = float(params["lng"][0])
+        st.session_state.punto_seleccionado = (lat, lng)
+        st.session_state.busqueda_realizada = True
+        st.session_state.mostrar_resultados = True
+        # Limpiar los parámetros para evitar recargas duplicadas
+        st.query_params.clear()
+    except:
+        pass
+
 with col1:
     st.subheader("Mapa Interactivo")
-    st.info("👇 **Haz clic en cualquier punto del mapa** para buscar productores cercanos.")
     
     # Verificar que tenemos datos válidos para el mapa
     if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
@@ -282,10 +293,17 @@ with col1:
             "#33ffff", "#ff8833", "#8833ff", "#88ff33", "#ff3388"
         ])
         
+        # Verificar si hay un archivo KML/SHP cargado
+        archivo_json = "null"
+        if st.session_state.archivo_cargado:
+            archivo_json = json.dumps(st.session_state.archivo_cargado)
+        
+        # Estado de búsqueda
+        busqueda_realizada = "true" if st.session_state.busqueda_realizada else "false"
+        
         # Código HTML y JavaScript para el mapa Leaflet
         mapa_html = f"""
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
         <style>
             #map {{
                 width: 100%;
@@ -340,26 +358,43 @@ with col1:
                 box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                 font-size: 14px;
             }}
-            .pointing-down-hand {{
-                position: absolute;
-                z-index: 1000;
-                top: 70px;
-                left: 10px;
-                font-size: 24px;
-                animation: pointdown 2s infinite;
+            .search-results {{
+                display: none;
+                background: white;
+                max-height: 200px;
+                overflow-y: auto;
+                border-radius: 4px;
+                margin-top: 5px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
             }}
-            @keyframes pointdown {{
-                0% {{ transform: translateY(0); }}
-                50% {{ transform: translateY(5px); }}
-                100% {{ transform: translateY(0); }}
+            .search-result-item {{
+                padding: 8px 12px;
+                border-bottom: 1px solid #eee;
+                cursor: pointer;
+            }}
+            .search-result-item:hover {{
+                background-color: #f0f0f0;
+            }}
+            .log-panel {{
+                position: fixed;
+                bottom: 10px;
+                right: 10px;
+                width: 300px;
+                height: 200px;
+                background: rgba(0,0,0,0.8);
+                color: #00ff00;
+                font-family: monospace;
+                padding: 10px;
+                overflow: auto;
+                z-index: 1000;
+                display: none;
             }}
         </style>
         
         <div id="map">
-            <div class="pointing-down-hand" id="pointing-hand">👇</div>
             <div class="search-control">
                 <input type="text" id="search-input" class="search-input" placeholder="Buscar ubicación...">
-                <div id="search-results" style="display: none; background: white; max-height: 200px; overflow-y: auto; border-radius: 4px; margin-top: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);"></div>
+                <div id="search-results" class="search-results"></div>
             </div>
         </div>
         <div id="selected-coords">
@@ -370,14 +405,41 @@ with col1:
             </div>
             <button id="use-coords-btn">🔍 USAR ESTAS COORDENADAS</button>
         </div>
+        <div id="log-panel" class="log-panel"></div>
         
         <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-        <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
         <script src="https://unpkg.com/@tmcw/togeojson/dist/togeojson.umd.js"></script>
         <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
         
         <script>
+            // Función para agregar logs (ayuda en depuración)
+            const DEBUG = true;
+            const logPanel = document.getElementById('log-panel');
+            
+            function log(message) {{
+                if (!DEBUG) return;
+                
+                if (typeof message === 'object') {{
+                    message = JSON.stringify(message, null, 2);
+                }}
+                
+                if (logPanel) {{
+                    const logLine = document.createElement('div');
+                    logLine.textContent = message;
+                    logPanel.appendChild(logLine);
+                    logPanel.scrollTop = logPanel.scrollHeight;
+                }}
+                
+                console.log(message);
+            }}
+            
+            // Mostrar panel de logs si se necesita depuración
+            if (DEBUG) {{
+                logPanel.style.display = 'block';
+            }}
+            
             // Inicializar el mapa
+            log('Inicializando mapa...');
             const map = L.map('map', {{
                 attributionControl: false  // Desactivar atribución para que no interfiera
             }}).setView([{centro_lat}, {centro_lon}], 9);
@@ -425,6 +487,7 @@ with col1:
                 }}
                 
                 searchTimeout = setTimeout(() => {{
+                    log(`Buscando: ${{query}}`);
                     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${{encodeURIComponent(query)}}&countrycodes=ar&limit=5`)
                         .then(response => response.json())
                         .then(data => {{
@@ -435,12 +498,11 @@ with col1:
                                 return;
                             }}
                             
+                            log(`Resultados encontrados: ${{data.length}}`);
+                            
                             data.forEach(result => {{
                                 const item = document.createElement('div');
                                 item.className = 'search-result-item';
-                                item.style.padding = '8px 12px';
-                                item.style.borderBottom = '1px solid #eee';
-                                item.style.cursor = 'pointer';
                                 item.textContent = result.display_name;
                                 
                                 item.addEventListener('mouseenter', function() {{
@@ -454,6 +516,8 @@ with col1:
                                 item.addEventListener('click', function() {{
                                     const lat = parseFloat(result.lat);
                                     const lon = parseFloat(result.lon);
+                                    
+                                    log(`Ubicación seleccionada: ${{lat}}, ${{lon}}`);
                                     
                                     // Actualizar el mapa
                                     map.setView([lat, lon], 13);
@@ -489,7 +553,7 @@ with col1:
                             searchResults.style.display = 'block';
                         }})
                         .catch(error => {{
-                            console.error('Error en la búsqueda:', error);
+                            log(`Error en la búsqueda: ${{error.message}}`);
                             searchResults.style.display = 'none';
                         }});
                 }}, 300);
@@ -516,11 +580,15 @@ with col1:
             
             // Función para dibujar polígonos de productores
             function dibujarPoligonos() {{
+                log('Dibujando polígonos...');
+                
                 // Limpiar los polígonos existentes
                 poligonosLayer.clearLayers();
                 
                 // Obtener los datos de polígonos
                 const datos = {poligonos_json};
+                
+                log(`Polígonos a dibujar: ${{datos.length}}`);
                 
                 datos.forEach((poligono, index) => {{
                     const coords = poligono.coords;
@@ -545,10 +613,14 @@ with col1:
                         poly.addTo(poligonosLayer);
                     }}
                 }});
+                
+                log('Polígonos dibujados correctamente');
             }}
             
             // Función para colorear polígonos cercanos
             function colorearPoligonosCercanos(cercanos) {{
+                log('Coloreando polígonos cercanos...');
+                
                 // Recorrer los polígonos en la capa
                 poligonosLayer.eachLayer(layer => {{
                     // Verificar si es un polígono
@@ -572,11 +644,15 @@ with col1:
                         }}
                     }}
                 }});
+                
+                log('Polígonos cercanos coloreados correctamente');
             }}
             
             // Función para colorear el polígono más cercano
             function colorearPoligonoMasCercano(masCercano) {{
                 if (!masCercano) return;
+                
+                log(`Coloreando polígono más cercano: ${{masCercano.idx}}`);
                 
                 poligonosLayer.eachLayer(layer => {{
                     if (layer instanceof L.Polygon && layer.idx === masCercano.idx) {{
@@ -598,6 +674,8 @@ with col1:
             map.on('click', function(e) {{
                 const lat = e.latlng.lat;
                 const lng = e.latlng.lng;
+                
+                log(`Clic en el mapa: ${{lat}}, ${{lng}}`);
                 
                 // Actualizar el texto con las coordenadas (con menos decimales)
                 document.getElementById('selected-lat').textContent = lat.toFixed(4);
@@ -626,94 +704,46 @@ with col1:
                 const lat = parseFloat(document.getElementById('selected-lat').textContent);
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
-                if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Ocultar la mano de puntero después de seleccionar
-                    document.getElementById('pointing-hand').style.display = 'none';
-                    
-                    // Método principal: form post
-                    const form = document.createElement('form');
-                    form.method = 'post';
-                    form.action = window.location.href;
-                    form.style.display = 'none';
-                    
-                    const latInput = document.createElement('input');
-                    latInput.type = 'hidden';
-                    latInput.name = 'lat';
-                    latInput.value = lat;
-                    
-                    const lngInput = document.createElement('input');
-                    lngInput.type = 'hidden';
-                    lngInput.name = 'lng';
-                    lngInput.value = lng;
-                    
-                    form.appendChild(latInput);
-                    form.appendChild(lngInput);
-                    document.body.appendChild(form);
-                    form.submit();
-                    
-                    // Métodos de respaldo
-                    // 1. Parámetros de URL
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('lat', lat);
-                    url.searchParams.set('lng', lng);
-                    
-                    // 2. Cookies
-                    document.cookie = `selected_lat=${{lat}}; path=/;`;
-                    document.cookie = `selected_lng=${{lng}}; path=/;`;
-                    
-                    // 3. LocalStorage
-                    localStorage.setItem('selected_lat', lat);
-                    localStorage.setItem('selected_lng', lng);
-                    
-                    // 4. postMessage a la ventana padre
-                    window.parent.postMessage({{
-                        type: 'streamlit:setComponentValue',
-                        value: {{ lat: lat, lng: lng }}
-                    }}, '*');
+                if (isNaN(lat) || isNaN(lng)) {{
+                    log('Coordenadas inválidas');
+                    return;
                 }}
-            }});
-            
-            // Manejador para actualizar los polígonos cercanos
-            window.addEventListener('message', function(event) {{
-                try {{
-                    const data = event.data;
-                    
-                    // Comprobar si tenemos datos de polígonos cercanos
-                    if (data && data.type === 'cercanos') {{
-                        // Actualizar los polígonos cercanos
-                        colorearPoligonosCercanos(data.cercanos);
-                        
-                        // Colorear el polígono más cercano
-                        if (data.masCercano) {{
-                            colorearPoligonoMasCercano(data.masCercano);
-                        }}
-                    }}
-                }} catch (e) {{
-                    console.error('Error al procesar mensaje:', e);
-                }}
+                
+                log(`Usando coordenadas: ${{lat}}, ${{lng}}`);
+                
+                // Método 1: Recargar la página con parámetros
+                const newUrl = new URL(window.location.href);
+                newUrl.searchParams.set('lat', lat);
+                newUrl.searchParams.set('lng', lng);
+                
+                log(`Redirigiendo a: ${{newUrl.toString()}}`);
+                window.location.href = newUrl.toString();
             }});
             
             // Función para cargar archivo KML/KMZ/Shapefile
-            function cargarArchivo(tipo, datos) {{
+            function cargarArchivo(tipo, nombre, datos) {{
+                log(`Cargando archivo: ${{nombre}}, tipo: ${{tipo}}`);
+                
                 try {{
-                    console.log("Cargando archivo de tipo:", tipo);
-                    
                     // Limpiar la capa de archivos previos
                     archivosLayer.clearLayers();
                     
-                    if (tipo.includes('kml')) {{
-                        console.log("Procesando KML...");
+                    if (tipo.includes('kml') || tipo.includes('kmz')) {{
+                        log('Procesando como KML/KMZ...');
+                        
                         // Convertir de base64 a texto
                         const texto = atob(datos);
                         
                         // Crear un objeto DOM del KML
                         const parser = new DOMParser();
                         const kml = parser.parseFromString(texto, 'text/xml');
-                        console.log("KML parseado:", kml);
+                        
+                        log('Archivo KML parseado, convirtiendo a GeoJSON...');
                         
                         // Convertir a GeoJSON usando toGeoJSON
                         const geojson = toGeoJSON.kml(kml);
-                        console.log("GeoJSON generado:", geojson);
+                        
+                        log('GeoJSON generado correctamente');
                         
                         // Agregar al mapa
                         const kmlLayer = L.geoJSON(geojson, {{
@@ -735,92 +765,88 @@ with col1:
                         
                         // Hacer zoom al extent
                         if (geojson.features && geojson.features.length > 0) {{
-                            const bounds = L.geoJSON(geojson).getBounds();
-                            map.fitBounds(bounds);
+                            try {{
+                                const bounds = L.geoJSON(geojson).getBounds();
+                                map.fitBounds(bounds);
+                                log('Zoom realizado al extent del KML');
+                            }} catch (e) {{
+                                log(`Error al hacer zoom: ${{e.message}}`);
+                            }}
                         }}
                         
-                        console.log("KML cargado correctamente");
-                        
                     }} else if (tipo.includes('zip') || tipo.includes('shp')) {{
-                        console.log("Procesando Shapefile...");
+                        log('Procesando como Shapefile...');
                         
-                        // Usar shpjs para cargar el shapefile
-                        const arrayBuffer = base64ToArrayBuffer(datos);
-                        console.log("ArrayBuffer creado de longitud:", arrayBuffer.byteLength);
+                        // Convertir base64 a ArrayBuffer
+                        const binaryString = atob(datos);
+                        const bytes = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {{
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }}
+                        const arrayBuffer = bytes.buffer;
                         
-                        shp(arrayBuffer).then(function(geojson) {{
-                            console.log("GeoJSON generado desde Shapefile:", geojson);
-                            
-                            const shpLayer = L.geoJSON(geojson, {{
-                                style: function(feature) {{
-                                    return {{
-                                        color: '#ff9900',
-                                        weight: 3,
-                                        opacity: 1,
-                                        fillOpacity: 0.3,
-                                        fillColor: '#ffcc33'
-                                    }};
-                                }},
-                                onEachFeature: function(feature, layer) {{
-                                    // Crear un popup con todas las propiedades
-                                    let popupContent = '<div class="shapefile-popup">';
-                                    
-                                    if (feature.properties) {{
-                                        for (const key in feature.properties) {{
-                                            const value = feature.properties[key];
-                                            popupContent += `<b>${{key}}:</b> ${{value}}<br>`;
+                        log(`ArrayBuffer creado: ${{arrayBuffer.byteLength}} bytes`);
+                        
+                        // Procesar Shapefile
+                        shp(arrayBuffer)
+                            .then(function(geojson) {{
+                                log('GeoJSON generado desde Shapefile');
+                                
+                                // Agregar al mapa
+                                const shpLayer = L.geoJSON(geojson, {{
+                                    style: function(feature) {{
+                                        return {{
+                                            color: '#ff9900',
+                                            weight: 3,
+                                            opacity: 1,
+                                            fillOpacity: 0.3,
+                                            fillColor: '#ffcc33'
+                                        }};
+                                    }},
+                                    onEachFeature: function(feature, layer) {{
+                                        // Crear popup con propiedades
+                                        if (feature.properties) {{
+                                            let popupContent = '<div>';
+                                            for (const key in feature.properties) {{
+                                                const value = feature.properties[key];
+                                                popupContent += `<b>${{key}}:</b> ${{value}}<br>`;
+                                            }}
+                                            popupContent += '</div>';
+                                            layer.bindPopup(popupContent);
                                         }}
                                     }}
-                                    
-                                    popupContent += '</div>';
-                                    layer.bindPopup(popupContent);
-                                }}
-                            }}).addTo(archivosLayer);
-                            
-                            // Hacer zoom al extent
-                            if (geojson.features && geojson.features.length > 0) {{
+                                }}).addTo(archivosLayer);
+                                
+                                // Hacer zoom al extent
                                 try {{
                                     const bounds = L.geoJSON(geojson).getBounds();
                                     map.fitBounds(bounds);
+                                    log('Zoom realizado al extent del Shapefile');
                                 }} catch (e) {{
-                                    console.error('Error al ajustar los límites:', e);
+                                    log(`Error al hacer zoom: ${{e.message}}`);
                                 }}
-                            }}
-                            
-                            console.log("Shapefile cargado correctamente");
-                        }}).catch(function(error) {{
-                            console.error('Error al procesar el shapefile:', error);
-                        }});
+                            }})
+                            .catch(function(error) {{
+                                log(`Error al procesar Shapefile: ${{error.message}}`);
+                            }});
                     }}
                 }} catch (error) {{
-                    console.error('Error al cargar el archivo:', error);
-                }}
-            }}
-            
-            // Función para convertir Base64 a ArrayBuffer
-            function base64ToArrayBuffer(base64) {{
-                try {{
-                    const binaryString = atob(base64);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {{
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }}
-                    return bytes.buffer;
-                }} catch (e) {{
-                    console.error("Error en base64ToArrayBuffer:", e);
-                    return new ArrayBuffer(0);
+                    log(`Error al cargar archivo: ${{error.message}}`);
                 }}
             }}
             
             // Cargar archivo si existe
-            {f"console.log('Intentando cargar archivo: {st.session_state.archivo_cargado['nombre']}'); cargarArchivo('{st.session_state.archivo_cargado['tipo']}', '{st.session_state.archivo_cargado['b64']}');" if st.session_state.archivo_cargado else "console.log('No hay archivo cargado');"}
+            const archivoData = {archivo_json};
+            if (archivoData && archivoData.nombre) {{
+                log(`Archivo detectado: ${{archivoData.nombre}}`);
+                cargarArchivo(archivoData.tipo, archivoData.nombre, archivoData.b64);
+            }}
             
             // Si hay un punto seleccionado previamente, mostrarlo
             {f"const lat = {st.session_state.punto_seleccionado[0]}; const lng = {st.session_state.punto_seleccionado[1]};" if st.session_state.punto_seleccionado else ""}
             {"""
             if (lat && lng) {
-                // Ocultar la mano de puntero si ya hay un punto seleccionado
-                document.getElementById('pointing-hand').style.display = 'none';
+                log(`Punto guardado: ${lat}, ${lng}`);
                 
                 // Crear marcador para el punto guardado
                 puntoSeleccionado = L.marker([lat, lng], {
@@ -842,45 +868,22 @@ with col1:
                 map.setView([lat, lng], 15);
             }
             """ if st.session_state.punto_seleccionado else ""}
+            
+            // Verificar si se ha realizado una búsqueda
+            const busquedaRealizada = {busqueda_realizada};
+            if (busquedaRealizada) {{
+                log('Búsqueda realizada, enviando mensaje para actualizar polígonos');
+                
+                // Enviar mensaje para actualizar polígonos cercanos
+                window.parent.postMessage({{
+                    type: 'busqueda_realizada'
+                }}, '*');
+            }}
         </script>
         """
         
         # Mostrar el mapa con Leaflet
         components_result = st.components.v1.html(mapa_html, height=600)
-        
-        # Verificar si hay parámetros de coordenadas en la URL
-        query_params = st.query_params
-        if 'lat' in query_params and 'lng' in query_params:
-            try:
-                lat = float(query_params['lat'][0])
-                lng = float(query_params['lng'][0])
-                st.session_state.punto_seleccionado = (lat, lng)
-                st.session_state.busqueda_realizada = True
-                # Limpiar los parámetros para evitar repeticiones
-                st.query_params.clear()
-            except:
-                pass
-        
-        # Verificar si hay datos en el POST
-        try:
-            form_data = st.experimental_get_query_params()
-            if 'lat' in form_data and 'lng' in form_data:
-                try:
-                    lat = float(form_data['lat'][0])
-                    lng = float(form_data['lng'][0])
-                    st.session_state.punto_seleccionado = (lat, lng)
-                    st.session_state.busqueda_realizada = True
-                except:
-                    pass
-        except:
-            pass
-        
-        # Procesar los resultados del componente HTML
-        if isinstance(components_result, dict) and 'lat' in components_result and 'lng' in components_result:
-            # Guardar las coordenadas en session_state
-            st.session_state.punto_seleccionado = (components_result['lat'], components_result['lng'])
-            st.session_state.busqueda_realizada = True
-            st.rerun()
         
     else:
         st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
@@ -903,6 +906,9 @@ with col2:
         
         # Enviar datos de polígonos cercanos al mapa
         if cuit_mas_cercano or (cuits_cercanos and len(cuits_cercanos) > 0):
+            # Marcar que hay resultados para mostrar
+            st.session_state.mostrar_resultados = True
+            
             # Crear JavaScript para actualizar el mapa
             update_js = f"""
             <script>
@@ -974,7 +980,7 @@ st.markdown("""
 2. **Selección en mapa**: Haz clic en cualquier punto del mapa.
 3. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
 4. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
-5. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
-6. **Radio de búsqueda**: Ajusta o edita directamente el radio para ver productores a mayor o menor distancia.
+5. **Filtros**: Usa el filtro por Razón Social para mostrar productores específicos.
+6. **Radio de búsqueda**: Ingresa directamente el radio de búsqueda deseado (en kilómetros).
 7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral para visualizarlos en el mapa.
 """)
