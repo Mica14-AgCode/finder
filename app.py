@@ -79,7 +79,9 @@ def punto_en_poligono(latitud, longitud, poligono_wkt):
             j = i
         
         return inside
-    except:
+    except Exception as e:
+        # Debug para inspeccionar errores (opcional)
+        # st.error(f"Error en punto_en_poligono: {str(e)}")
         return False
 
 def wkt_a_coordenadas(wkt_str):
@@ -102,7 +104,9 @@ def wkt_a_coordenadas(wkt_str):
                 coords.append([lat, lon])
         
         return coords
-    except:
+    except Exception as e:
+        # Debug para inspeccionar errores (opcional)
+        # st.error(f"Error en wkt_a_coordenadas: {str(e)}")
         return []
 
 def crear_datos_ejemplo():
@@ -140,7 +144,8 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
             return crear_datos_ejemplo()
         
         return df
-    except:
+    except Exception as e:
+        # st.error(f"Error al cargar datos: {str(e)}")
         return crear_datos_ejemplo()
 
 def encontrar_productor_contenedor(lat, lon, datos):
@@ -239,26 +244,41 @@ with st.sidebar:
     3. Ajusta el radio de búsqueda si es necesario
     """)
 
-# Verificar parámetros URL (sin hacer experimental_rerun)
+# CORRECCIÓN: Manejo de query parameters compatible con todas las versiones
 try:
-    # Ver si tenemos parámetros de URL
-    params = st.experimental_get_query_params()
-    if 'lat' in params and 'lng' in params:
-        lat = float(params['lat'][0])
-        lon = float(params['lng'][0])
-        
-        # Actualizar estado sin rerun
-        st.session_state.punto_seleccionado = (lat, lon)
-        st.session_state.mostrar_resultado = True
-        
-        # Buscar productores cercanos
-        st.session_state.productores_cercanos = encontrar_cuits_cercanos(
-            lat, lon, datos_productores, radio_km=st.session_state.radio_busqueda
-        )
-        
-        # Limpiar parámetros sin rerun
-        st.experimental_set_query_params()
-except:
+    # Intentar obtener parámetros de URL (método compatible)
+    query_params = st.experimental_get_query_params() if hasattr(st, 'experimental_get_query_params') else {}
+    
+    # Alternativa para versiones más recientes
+    if not query_params and hasattr(st, 'query_params'):
+        query_params = st.query_params
+    
+    # Procesar parámetros si existen
+    if query_params and 'lat' in query_params and 'lng' in query_params:
+        try:
+            lat = float(query_params['lat'][0])
+            lon = float(query_params['lng'][0])
+            
+            # Actualizar estado sin rerun
+            st.session_state.punto_seleccionado = (lat, lon)
+            st.session_state.mostrar_resultado = True
+            
+            # Buscar productores cercanos
+            st.session_state.productores_cercanos = encontrar_cuits_cercanos(
+                lat, lon, datos_productores, radio_km=st.session_state.radio_busqueda
+            )
+            
+            # Limpiar parámetros sin usar experimental_rerun
+            if hasattr(st, 'experimental_set_query_params'):
+                st.experimental_set_query_params()
+            elif hasattr(st, 'query_params'):
+                # Para versiones más nuevas
+                for k in list(st.query_params.keys()):
+                    del st.query_params[k]
+        except Exception as e:
+            # Error silencioso al procesar parámetros
+            pass
+except Exception as e:
     # Ignorar errores de parámetros silenciosamente
     pass
 
@@ -275,6 +295,7 @@ with col1:
     # Preparar datos para el mapa
     poligonos_result = []
     productores_para_marcadores = []
+    
     if st.session_state.punto_seleccionado and st.session_state.productores_cercanos:
         productores_cercanos = st.session_state.productores_cercanos
         
@@ -303,12 +324,20 @@ with col1:
                 'contenedor': productor.get('contenedor', False)
             })
     
-    # Crear mapa Leaflet simplificado
+    # CORRECCIÓN: JSON encoding para coordenadas seleccionadas
+    punto_seleccionado_json = "null"
+    if st.session_state.punto_seleccionado:
+        lat, lon = st.session_state.punto_seleccionado
+        punto_seleccionado_json = json.dumps([lat, lon])
+    
+    # Crear mapa Leaflet mejorado
     mapa_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" 
+              integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" 
+              crossorigin=""/>
         <style>
             #map {{
                 width: 100%;
@@ -349,7 +378,9 @@ with col1:
             <button id="search-btn">Buscar</button>
         </div>
         
-        <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
+                integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" 
+                crossorigin=""></script>
         <script>
             // Variables globales
             let map;
@@ -360,7 +391,7 @@ with col1:
             // Datos
             const poligonos = {json.dumps(poligonos_result)};
             const marcadores = {json.dumps(productores_para_marcadores)};
-            const puntoSeleccionado = {"[" + str(st.session_state.punto_seleccionado[0]) + "," + str(st.session_state.punto_seleccionado[1]) + "]" if st.session_state.punto_seleccionado else "null"};
+            const puntoSeleccionado = {punto_seleccionado_json};
             
             // Inicializar mapa
             document.addEventListener('DOMContentLoaded', () => {{
