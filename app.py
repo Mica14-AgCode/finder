@@ -23,7 +23,7 @@ if 'busqueda_realizada' not in st.session_state:
 if 'archivo_cargado' not in st.session_state:
     st.session_state.archivo_cargado = None
 if 'radio_busqueda' not in st.session_state:
-    st.session_state.radio_busqueda = 5.0
+    st.session_state.radio_busqueda = 200.0  # Radio predeterminado ampliado a 200 km
 if 'modo_debug' not in st.session_state:
     st.session_state.modo_debug = True
 if 'resultado_busqueda' not in st.session_state:
@@ -373,8 +373,9 @@ st.sidebar.subheader("Radio de búsqueda")
 radio_busqueda = st.sidebar.number_input(
     "Radio de búsqueda (km):",
     min_value=0.1,
+    max_value=500.0,
     value=st.session_state.radio_busqueda,
-    step=0.1,
+    step=1.0,
     format="%.1f"
 )
 st.session_state.radio_busqueda = radio_busqueda
@@ -922,18 +923,20 @@ with col1:
     # Mostrar el mapa
     st.components.v1.html(mapa_html, height=600, scrolling=False)
     
-    # Escuchar mensajes del mapa
-    components.html("""
+    # Escuchar mensajes del mapa simplificado
+    st.components.v1.html("""
     <script>
-    // Detectar cuando el mapa envía coordenadas
+    // Función para detectar mensajes del mapa
     window.addEventListener('message', function(event) {
         if (event.data && event.data.type === 'coordenadas_seleccionadas') {
             const coords = event.data.coords;
             
-            // Enviar a Streamlit
-            window.parent.Streamlit.setComponentValue({
-                coordenadas: coords
-            });
+            // Usar el objeto Streamlit global
+            if (window.parent.Streamlit) {
+                window.parent.Streamlit.setComponentValue({
+                    coordenadas: coords
+                });
+            }
         }
     });
     </script>
