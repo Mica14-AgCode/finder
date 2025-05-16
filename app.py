@@ -93,6 +93,9 @@ def punto_en_poligono(latitud, longitud, poligono_wkt):
                 inside = not inside
             j = i
         
+        if st.session_state.modo_debug and inside:
+            st.write(f"Punto ({latitud}, {longitud}) está DENTRO del polígono")
+        
         return inside
     except Exception as e:
         if st.session_state.modo_debug:
@@ -268,8 +271,9 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
     if productor_contenedor:
         cercanos.append(productor_contenedor)
         if st.session_state.modo_debug:
-            st.write(f"El punto está dentro del polígono de: {productor_contenedor['titular']}")
+            st.success(f"El punto está dentro del polígono de: {productor_contenedor['titular']}")
     
+    # Buscar otros productores cercanos por distancia
     for idx, fila in datos.iterrows():
         if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
             # Si ya encontramos que este productor contiene el punto, saltarlo
@@ -302,7 +306,10 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
     
     # Para depuración
     if st.session_state.modo_debug:
-        st.write(f"Se encontraron {len(cercanos)} CUITs dentro del radio de {radio_km} km")
+        if cercanos:
+            st.success(f"Se encontraron {len(cercanos)} productores dentro del radio de {radio_km} km")
+        else:
+            st.warning(f"No se encontró ningún productor dentro del radio de {radio_km} km")
     
     return cercanos
 
@@ -916,26 +923,21 @@ with col1:
     st.components.v1.html(mapa_html, height=600, scrolling=False)
     
     # Escuchar mensajes del mapa
-    st.markdown("""
+    components.html("""
     <script>
+    // Detectar cuando el mapa envía coordenadas
     window.addEventListener('message', function(event) {
         if (event.data && event.data.type === 'coordenadas_seleccionadas') {
             const coords = event.data.coords;
             
             // Enviar a Streamlit
-            const data = {
+            window.parent.Streamlit.setComponentValue({
                 coordenadas: coords
-            };
-            
-            // Usar Streamlit API
-            window.parent.postMessage({
-                type: "streamlit:setComponentValue",
-                value: data
-            }, "*");
+            });
         }
     });
     </script>
-    """, unsafe_allow_html=True)
+    """, height=0)
     
     # Componente personalizado para recibir las coordenadas
     coordenadas_component = st.empty()
