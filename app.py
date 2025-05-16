@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Point, Polygon
-import folium
-from streamlit_folium import folium_static
 import numpy as np
-from geopy.distance import geodesic
-import os
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as mplPolygon
+from io import StringIO
+import re
+import math
+import base64
+from datetime import datetime
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -14,65 +15,261 @@ st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
 # Título de la aplicación
 st.title("Visor de Productores Agrícolas")
 
-# Ruta al archivo CSV (debe estar en la misma carpeta que la app)
+# Ruta al archivo CSV
 RUTA_CSV = "datos_productores.csv"
 
-# Cargar datos de productores desde CSV
+# Clases básicas para manejar geometrías sin shapely
+class Punto:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    
+    def distancia(self, otro_punto):
+        """Calcular la distancia euclidiana entre dos puntos"""
+        return math.sqrt((self.x - otro_punto.x) ** 2 + (self.y - otro_punto.y) ** 2)
+    
+    def distancia_km(self, otro_punto):
+        """Distancia aproximada en kilómetros usando la fórmula de Haversine"""
+        # Radio de la Tierra en km
+        R = 6371.0
+        
+        # Convertir coordenadas a radianes
+        lat1 = math.radians(self.y)
+        lon1 = math.radians(self.x)
+        lat2 = math.radians(otro_punto.y)
+        lon2 = math.radians(otro_punto.x)
+        
+        # Diferencias de latitud y longitud
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        
+        # Fórmula de Haversine
+        a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        distancia = R * c
+        
+        return distancia
+
+class Poligono:
+    def __init__(self, puntos):
+        self.puntos = puntos
+    
+    def contiene_punto(self, punto):
+        """Verifica si un punto está dentro del polígono usando ray casting"""
+        x, y = punto.x, punto.y
+        n = len(self.puntos)
+        dentro = False
+        
+        p1x, p1y = self.puntos[0].x, self.puntos[0].y
+        for i in range(n + 1):
+            p2x, p2y = self.puntos[i % n].x, self.puntos[i % n].y
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            dentro = not dentro
+            p1x, p1y = p2x, p2y
+        
+        return dentro
+    
+    def centroide(self):
+        """Calcular el centroide del polígono"""
+        x_sum = sum(p.x for p in self.puntos)
+        y_sum = sum(p.y for p in self.puntos)
+        return Punto(x_sum / len(self.puntos), y_sum / len(self.puntos))
+
+def parse_poligono(poligono_wkt):
+    """Parsea un polígono en formato WKT a nuestra estructura"""
+    if not poligono_wkt or not isinstance(poligono_wkt, str):
+        return None
+
+    try:
+        # Extraer las coordenadas del polígono WKT
+        coords_str = re.search(r'POLYGON\s*\(\((.*?)\)\)', poligono_wkt)
+        if not coords_str:
+            return None
+        
+        # Convertir las coordenadas en puntos
+        coords = coords_str.group(1).split(',')
+        puntos = []
+        for coord in coords:
+            x, y = map(float, coord.strip().split())
+            puntos.append(Punto(x, y))
+        
+        return Poligono(puntos)
+    except Exception as e:
+        st.warning(f"Error al parsear polígono: {e}")
+        return None
+
+# Función para cargar y procesar los datos
 @st.cache_data
 def cargar_datos(ruta_archivo=RUTA_CSV):
-    """
-    Carga los datos de productores desde un archivo CSV.
-    El CSV debe estar en la misma carpeta que la aplicación Streamlit.
-    """
+    """Carga los datos de productores desde un archivo CSV"""
     try:
-        # Verificar si el archivo existe
-        if not os.path.exists(ruta_archivo):
-            st.error(f"Error: No se encontró el archivo {ruta_archivo}")
-            return crear_datos_demo()
-        
         # Cargar el CSV
         df = pd.read_csv(ruta_archivo)
         
-        # Verificar si tiene la columna de polígonos
+        # Procesar las geometrías
         if 'poligono' in df.columns:
-            # Asegurar que no hay valores nulos en la columna de polígonos
-            df = df.dropna(subset=['poligono'])
+            # Convertir los polígonos WKT a nuestra estructura
+            df['geom'] = df['poligono'].apply(parse_poligono)
             
-            try:
-                # Intenta convertir la columna 'poligono' a geometría
-                gdf = gpd.GeoDataFrame(
-                    df, geometry=gpd.GeoSeries.from_wkt(df['poligono']), crs="EPSG:4326"
-                )
-            except Exception as e:
-                st.warning(f"Error al convertir los polígonos: {e}. Usando coordenadas de puntos en su lugar.")
-                gdf = gpd.GeoDataFrame(
-                    df, geometry=gpd.points_from_xy(df['longitud'], df['latitud']), crs="EPSG:4326"
-                )
+            # Filtrar filas sin geometría válida
+            df = df[df['geom'].notna()]
+            
+            # Agregar centroides
+            df['centroide'] = df['geom'].apply(lambda p: p.centroide() if p else None)
         else:
-            # Si no tiene polígonos, usar latitud/longitud
-            gdf = gpd.GeoDataFrame(
-                df, geometry=gpd.points_from_xy(df['longitud'], df['latitud']), crs="EPSG:4326"
+            # Si no hay polígonos, usar puntos de latitud/longitud
+            df['centroide'] = df.apply(
+                lambda row: Punto(row['longitud'], row['latitud']) 
+                if pd.notna(row['longitud']) and pd.notna(row['latitud']) else None, 
+                axis=1
             )
-        return gdf
+            df = df[df['centroide'].notna()]
+        
+        return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
-        return crear_datos_demo()
-
-def crear_datos_demo():
-    """Crea un conjunto de datos de demostración"""
-    return gpd.GeoDataFrame(
-        {
+        # Crear datos de ejemplo
+        return pd.DataFrame({
             'cuit': ['20123456789', '30987654321'],
-            'nombre': ['Productor Ejemplo 1', 'Productor Ejemplo 2'],
+            'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2'],
+            'renspa': ['12.345.6.78901/01', '98.765.4.32109/02'],
             'localidad': ['Localidad 1', 'Localidad 2'],
-            'geometry': [
-                Polygon([(-60.0, -34.0), (-60.1, -34.0), (-60.1, -34.1), (-60.0, -34.1)]),
-                Polygon([(-60.2, -34.2), (-60.3, -34.2), (-60.3, -34.3), (-60.2, -34.3)])
-            ]
-        }, crs="EPSG:4326"
-    )
+            'superficie': [100, 150],
+            'longitud': [-60.0, -60.2],
+            'latitud': [-34.0, -34.2]
+        })
 
-# Mostrar mensaje de instrucciones para el archivo
+# Generar un mapa estático usando matplotlib
+def generar_mapa(datos, punto_seleccionado=None, radio_km=5):
+    """Genera un mapa estático con matplotlib"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Dibujar los polígonos
+    for _, fila in datos.iterrows():
+        if 'geom' in fila and fila['geom'] is not None:
+            # Convertir puntos del polígono al formato que espera matplotlib
+            poligono = fila['geom']
+            puntos = [(p.x, p.y) for p in poligono.puntos]
+            
+            # Dibujar el polígono
+            poly = mplPolygon(puntos, closed=True, fill=True, alpha=0.3, edgecolor='blue', facecolor='lightblue')
+            ax.add_patch(poly)
+            
+            # Dibujar el centroide
+            if fila['centroide']:
+                ax.plot(fila['centroide'].x, fila['centroide'].y, 'bo', markersize=3)
+        elif fila['centroide']:
+            # Si no hay polígono, solo dibujar el punto
+            ax.plot(fila['centroide'].x, fila['centroide'].y, 'bo', markersize=5)
+    
+    # Dibujar el punto seleccionado y el radio
+    if punto_seleccionado:
+        lat, lon = punto_seleccionado
+        ax.plot(lon, lat, 'ro', markersize=8)
+        
+        # Dibujar círculo de radio
+        # Aproximación simple: en estas latitudes, 1 grado ~ 111 km
+        radio_grados = radio_km / 111
+        circle = plt.Circle((lon, lat), radio_grados, fill=False, color='red', linestyle='--')
+        ax.add_patch(circle)
+    
+    # Configurar los ejes
+    if not datos.empty:
+        # Calcular los límites del mapa basados en los datos
+        if 'geom' in datos.columns and datos['geom'].notna().any():
+            # Usar los límites de los polígonos
+            all_x = []
+            all_y = []
+            for geom in datos['geom'].dropna():
+                if geom:
+                    for p in geom.puntos:
+                        all_x.append(p.x)
+                        all_y.append(p.y)
+            
+            if all_x and all_y:
+                min_x, max_x = min(all_x), max(all_x)
+                min_y, max_y = min(all_y), max(all_y)
+                
+                # Agregar un margen
+                margin_x = (max_x - min_x) * 0.1
+                margin_y = (max_y - min_y) * 0.1
+                
+                ax.set_xlim(min_x - margin_x, max_x + margin_x)
+                ax.set_ylim(min_y - margin_y, max_y + margin_y)
+        else:
+            # Usar los centroides
+            centroides = datos['centroide'].dropna()
+            if len(centroides) > 0:
+                all_x = [c.x for c in centroides if c]
+                all_y = [c.y for c in centroides if c]
+                
+                if all_x and all_y:
+                    min_x, max_x = min(all_x), max(all_x)
+                    min_y, max_y = min(all_y), max(all_y)
+                    
+                    # Agregar un margen
+                    margin_x = (max_x - min_x) * 0.1
+                    margin_y = (max_y - min_y) * 0.1
+                    
+                    ax.set_xlim(min_x - margin_x, max_x + margin_x)
+                    ax.set_ylim(min_y - margin_y, max_y + margin_y)
+    
+    ax.set_xlabel('Longitud')
+    ax.set_ylabel('Latitud')
+    ax.set_title('Mapa de Productores Agrícolas')
+    ax.grid(True)
+    
+    # Convertir la figura a una imagen para mostrar en Streamlit
+    return fig
+
+# Función para encontrar el CUIT en un punto y los CUITs cercanos
+def encontrar_cuits(lat, lon, datos, radio_km=5):
+    """
+    Encuentra el CUIT asociado a un punto y los CUITs cercanos.
+    """
+    punto = Punto(lon, lat)
+    
+    # Verificar si el punto está dentro de algún polígono
+    dentro = None
+    for idx, fila in datos.iterrows():
+        if 'geom' in fila and fila['geom'] is not None and fila['geom'].contiene_punto(punto):
+            dentro = {
+                'cuit': fila['cuit'],
+                'titular': fila['titular'] if 'titular' in fila else 'No disponible',
+                'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
+                'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
+                'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
+                'tipo': 'Exacto'
+            }
+            break
+    
+    # Encontrar CUITs cercanos basados en la distancia
+    cercanos = []
+    for idx, fila in datos.iterrows():
+        if fila['centroide']:
+            distancia = punto.distancia_km(fila['centroide'])
+            
+            if distancia <= radio_km:
+                cercanos.append({
+                    'cuit': fila['cuit'],
+                    'titular': fila['titular'] if 'titular' in fila else 'No disponible',
+                    'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
+                    'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
+                    'distancia': round(distancia, 2),
+                    'tipo': 'Cercano'
+                })
+    
+    # Ordenar por distancia
+    cercanos = sorted(cercanos, key=lambda x: x['distancia'])
+    
+    return dentro, cercanos
+
+# Mostrar mensaje de instrucciones
 with st.sidebar:
     st.info(f"""
     **Instrucciones de configuración:**
@@ -80,7 +277,7 @@ with st.sidebar:
     El archivo CSV con los datos de productores debe:
     1. Llamarse '{RUTA_CSV}'
     2. Estar en la misma carpeta que esta aplicación
-    3. Contener las columnas: 'cuit', 'titular', 'longitud', 'latitud', etc.
+    3. Contener las columnas necesarias: 'cuit', 'titular', etc.
     """)
 
 # Cargar datos
@@ -118,145 +315,14 @@ radio_busqueda = st.sidebar.slider(
     step=0.5
 )
 
-# Función para encontrar el CUIT asociado a un punto y los CUITs cercanos
-def encontrar_cuits(lat, lon, datos, radio_km=5):
-    """
-    Encuentra el CUIT asociado a un punto y los CUITs cercanos.
-    
-    Args:
-        lat: Latitud del punto
-        lon: Longitud del punto
-        datos: GeoDataFrame con los datos de productores
-        radio_km: Radio de búsqueda en kilómetros
-        
-    Returns:
-        (cuit_exacto, cuits_cercanos): Tupla con el CUIT exacto y una lista de CUITs cercanos
-    """
-    punto = Point(lon, lat)
-    
-    # Verificar si el punto está dentro de algún polígono
-    dentro = None
-    for idx, fila in datos.iterrows():
-        if punto.within(fila.geometry):
-            dentro = {
-                'cuit': fila['cuit'],
-                'titular': fila['titular'] if 'titular' in fila else 'No disponible',
-                'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
-                'superficie': fila['superficie'] if 'superficie' in fila else 'No disponible',
-                'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
-                'tipo': 'Exacto'
-            }
-            break
-    
-    # Encontrar CUITs cercanos basados en la distancia al centroide del polígono
-    cercanos = []
-    punto_coords = (lat, lon)
-    
-    for idx, fila in datos.iterrows():
-        # Calcular el centroide del polígono
-        centroide = fila.geometry.centroid
-        centroide_coords = (centroide.y, centroide.x)
-        
-        # Calcular distancia
-        distancia = geodesic(punto_coords, centroide_coords).kilometers
-        
-        if distancia <= radio_km:
-            cercanos.append({
-                'cuit': fila['cuit'],
-                'titular': fila['titular'] if 'titular' in fila else 'No disponible',
-                'renspa': fila['renspa'] if 'renspa' in fila else 'No disponible',
-                'localidad': fila['localidad'] if 'localidad' in fila else 'No disponible',
-                'distancia': round(distancia, 2),
-                'tipo': 'Cercano'
-            })
-    
-    # Ordenar por distancia
-    cercanos = sorted(cercanos, key=lambda x: x['distancia'])
-    
-    return dentro, cercanos
-
-# Configurar el mapa inicial
-# Centro del mapa en Argentina
-centro_mapa = [-34.603722, -58.381592]  # Buenos Aires por defecto
-
-# Calcular un centro mejor basado en los datos si es posible
-if not datos_filtrados.empty:
-    centro_mapa = [
-        datos_filtrados.geometry.centroid.y.mean(),
-        datos_filtrados.geometry.centroid.x.mean()
-    ]
-
-# Crear el mapa con folium
-m = folium.Map(location=centro_mapa, zoom_start=7)
-
-# Agregar capa base de satélite
-folium.TileLayer(
-    tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr='Esri',
-    name='Satélite',
-    overlay=False
-).add_to(m)
-
-# Agregar los polígonos de los campos al mapa
-for idx, fila in datos_filtrados.iterrows():
-    try:
-        # Extraer información para el popup
-        cuit = fila['cuit']
-        titular = fila['titular'] if 'titular' in fila else 'No disponible'
-        renspa = fila['renspa'] if 'renspa' in fila else 'No disponible'
-        superficie = fila['superficie'] if 'superficie' in fila else 'No disponible'
-        localidad = fila['localidad'] if 'localidad' in fila else 'No disponible'
-        
-        # Contenido del popup
-        popup_content = f"""
-        <b>CUIT:</b> {cuit}<br>
-        <b>Titular:</b> {titular}<br>
-        <b>RENSPA:</b> {renspa}<br>
-        <b>Superficie:</b> {superficie} ha<br>
-        <b>Localidad:</b> {localidad}
-        """
-        
-        # Crear el polígono en el mapa
-        if hasattr(fila.geometry, 'exterior'):
-            # Es un polígono
-            coords = [(y, x) for x, y in fila.geometry.exterior.coords]
-            
-            folium.Polygon(
-                locations=coords,
-                popup=folium.Popup(popup_content, max_width=300),
-                tooltip=f"CUIT: {cuit}",
-                color='blue',
-                fill=True,
-                fill_opacity=0.2
-            ).add_to(m)
-        else:
-            # Es un punto
-            folium.CircleMarker(
-                location=[fila.geometry.y, fila.geometry.x],
-                popup=folium.Popup(popup_content, max_width=300),
-                tooltip=f"CUIT: {cuit}",
-                color='blue',
-                fill=True,
-                fill_opacity=0.2,
-                radius=50
-            ).add_to(m)
-    except Exception as e:
-        continue  # Ignorar geometrías problemáticas
-
-# Agregar control de capas
-folium.LayerControl().add_to(m)
-
-# Contenedor para mostrar el mapa y resultados lado a lado
+# Contenedor para mostrar el mapa y resultados
 col1, col2 = st.columns([3, 1])
 
 with col1:
     st.subheader("Mapa de Productores")
     
-    # Mostrar el mapa
-    folium_static(m, width=800, height=600)
-    
     # Campos para ingresar coordenadas manualmente
-    st.subheader("Ingresar coordenadas manualmente")
+    st.subheader("Ingresar coordenadas")
     col_lat, col_lon = st.columns(2)
     with col_lat:
         latitud = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
@@ -266,6 +332,17 @@ with col1:
     if st.button("Buscar en estas coordenadas"):
         st.session_state.punto_seleccionado = (latitud, longitud)
         st.session_state.busqueda_realizada = True
+    
+    # Generar y mostrar el mapa
+    punto_seleccionado = st.session_state.get('punto_seleccionado')
+    fig = generar_mapa(datos_filtrados, punto_seleccionado, radio_busqueda)
+    st.pyplot(fig)
+    
+    # Disclaimer
+    st.info("""
+    **Nota:** Este mapa es estático y no permite interacción directa. 
+    Para consultar un punto, ingresa las coordenadas manualmente y haz clic en "Buscar".
+    """)
 
 with col2:
     st.subheader("Resultados")
@@ -292,7 +369,7 @@ with col2:
         if cuits_cercanos:
             st.subheader(f"Productores cercanos (radio {radio_busqueda} km):")
             for i, cercano in enumerate(cuits_cercanos[:5]):  # Mostrar los 5 más cercanos
-                with st.expander(f"{i+1}. CUIT: {cercano['cuit']} - {cercano['titular']} ({cercano['distancia']} km)"):
+                with st.expander(f"{i+1}. CUIT: {cercano['cuit']} ({cercano['distancia']} km)"):
                     st.markdown(f"""
                     **CUIT:** {cercano['cuit']}  
                     **Titular:** {cercano['titular']}  
@@ -303,15 +380,15 @@ with col2:
         else:
             st.info(f"No se encontraron productores cercanos en un radio de {radio_busqueda} km.")
     else:
-        st.info("Selecciona un punto en el mapa o ingresa coordenadas para ver los resultados.")
+        st.info("Selecciona un punto ingresando coordenadas y haciendo clic en 'Buscar'.")
 
 # Instrucciones de uso
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
 1. **Filtrado**: Usa los filtros en el panel lateral para mostrar productores específicos.
-2. **Selección en mapa**: Haz clic en el mapa para consultar un punto.
-3. **Coordenadas manuales**: O puedes ingresar las coordenadas manualmente y hacer clic en "Buscar".
+2. **Coordenadas**: Ingresa las coordenadas del punto que deseas consultar.
+3. **Buscar**: Haz clic en el botón "Buscar" para ver si el punto pertenece a un campo registrado.
 4. **Resultados**: El sistema mostrará si el punto seleccionado pertenece a un campo registrado y qué productores están cercanos.
 """)
 
