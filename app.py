@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import pydeck as pdk
 import math
 import json
 
@@ -18,8 +17,6 @@ if 'punto_seleccionado' not in st.session_state:
     st.session_state.punto_seleccionado = None
 if 'busqueda_realizada' not in st.session_state:
     st.session_state.busqueda_realizada = False
-if 'clicked_coord' not in st.session_state:
-    st.session_state.clicked_coord = None
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -180,105 +177,206 @@ with col1:
     
     # Verificar que tenemos datos válidos para el mapa
     if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
-        # Determinar el centro del mapa
+        # Calcular el centro del mapa
         centro_lat = datos_filtrados['latitud'].mean()
         centro_lon = datos_filtrados['longitud'].mean()
         
-        # Preparar datos para visualizar en el mapa
+        # Preparar los datos para el mapa
         mapa_datos = []
         for idx, fila in datos_filtrados.iterrows():
             if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
                 mapa_datos.append({
-                    'position': [fila['longitud'], fila['latitud']],
-                    'tooltip': f"CUIT: {fila['cuit']}, Titular: {fila['titular']}",
-                    'color': [0, 0, 255, 160],  # RGBA azul
-                    'radius': 100
+                    'lat': fila['latitud'],
+                    'lon': fila['longitud'],
+                    'cuit': fila['cuit'],
+                    'titular': fila['titular']
                 })
         
-        # Agregar punto seleccionado si existe
+        # Convertir a JSON para pasar al JavaScript
+        mapa_datos_json = json.dumps(mapa_datos)
+        
+        # Si hay un punto seleccionado, convertirlo a JSON también
+        punto_seleccionado_json = "null"
         if st.session_state.punto_seleccionado:
             lat, lon = st.session_state.punto_seleccionado
-            mapa_datos.append({
-                'position': [lon, lat],
-                'tooltip': "Ubicación seleccionada",
-                'color': [255, 0, 0, 200],  # RGBA rojo
-                'radius': 150
+            punto_seleccionado_json = json.dumps({
+                'lat': lat,
+                'lon': lon,
+                'radio': radio_busqueda
             })
+        
+        # Código HTML y JavaScript para el mapa Leaflet
+        mapa_html = f"""
+        <div id="map" style="width:100%; height:500px;"></div>
+        <div id="selected-coords" style="margin-top:10px; padding:10px; background-color:#f8f9fa; border-radius:5px;">
+            Coordenadas del punto seleccionado: <span id="selected-lat">-</span>, <span id="selected-lng">-</span>
+            <button id="use-coords" style="margin-left:10px; padding:5px 10px; background-color:#4CAF50; color:white; border:none; border-radius:4px; cursor:pointer;">Usar estas coordenadas</button>
+        </div>
+        
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+        
+        <script>
+            // Inicializar el mapa
+            const map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
             
-            # También agregar un círculo que represente el radio de búsqueda
-            # Crear puntos para el círculo (aproximación)
-            num_puntos = 40
-            radio_grados = radio_busqueda / 111  # Aproximación: 1 grado ~ 111 km en el ecuador
-            for i in range(num_puntos):
-                angulo = (i / num_puntos) * 2 * math.pi
-                x = lon + radio_grados * math.cos(angulo)
-                y = lat + radio_grados * math.sin(angulo)
-                mapa_datos.append({
-                    'position': [x, y],
-                    'color': [255, 0, 0, 100],  # RGBA rojo transparente
-                    'radius': 30
-                })
+            // Agregar capa base (OpenStreetMap)
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }}).addTo(map);
+            
+            // Agregar capa de satélite (ESRI)
+            const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+            }});
+            
+            // Agregar control de capas
+            const baseMaps = {{
+                "Mapa": L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }}),
+                "Satélite": satellite
+            }};
+            
+            L.control.layers(baseMaps).addTo(map);
+            
+            // Activar la capa de satélite por defecto
+            satellite.addTo(map);
+            
+            // Agregar marcadores para cada productor
+            const datos = {mapa_datos_json};
+            const marcadores = [];
+            
+            datos.forEach(punto => {{
+                const marker = L.marker([punto.lat, punto.lon])
+                    .bindPopup(`<b>CUIT:</b> ${{punto.cuit}}<br><b>Titular:</b> ${{punto.titular}}`);
+                marker.addTo(map);
+                marcadores.push(marker);
+            }});
+            
+            // Variable para el marcador del punto seleccionado
+            let puntoSeleccionado = null;
+            let circuloRadio = null;
+            
+            // Evento de clic en el mapa
+            map.on('click', function(e) {{
+                const lat = e.latlng.lat;
+                const lng = e.latlng.lng;
+                
+                // Actualizar el texto con las coordenadas
+                document.getElementById('selected-lat').textContent = lat.toFixed(6);
+                document.getElementById('selected-lng').textContent = lng.toFixed(6);
+                
+                // Si ya hay un marcador, eliminarlo
+                if (puntoSeleccionado) {{
+                    map.removeLayer(puntoSeleccionado);
+                }}
+                
+                // Si ya hay un círculo, eliminarlo
+                if (circuloRadio) {{
+                    map.removeLayer(circuloRadio);
+                }}
+                
+                // Crear un nuevo marcador
+                puntoSeleccionado = L.marker([lat, lng], {{
+                    icon: L.icon({{
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    }})
+                }}).addTo(map);
+                
+                // Crear un círculo con el radio de búsqueda
+                circuloRadio = L.circle([lat, lng], {{
+                    color: 'red',
+                    fillColor: '#f03',
+                    fillOpacity: 0.2,
+                    radius: {radio_busqueda} * 1000 // Convertir km a metros
+                }}).addTo(map);
+            }});
+            
+            // Evento para el botón de usar coordenadas
+            document.getElementById('use-coords').addEventListener('click', function() {{
+                const lat = parseFloat(document.getElementById('selected-lat').textContent);
+                const lng = parseFloat(document.getElementById('selected-lng').textContent);
+                
+                if (!isNaN(lat) && !isNaN(lng)) {{
+                    // Enviar las coordenadas a Streamlit
+                    const data = {{
+                        lat: lat,
+                        lng: lng
+                    }};
+                    
+                    // Actualizar el estado de Streamlit
+                    window.parent.postMessage({{
+                        type: "streamlit:setComponentValue",
+                        value: data
+                    }}, "*");
+                }}
+            }});
+            
+            // Si hay un punto seleccionado previamente, mostrarlo
+            const puntoGuardado = {punto_seleccionado_json};
+            if (puntoGuardado) {{
+                // Crear marcador para el punto guardado
+                puntoSeleccionado = L.marker([puntoGuardado.lat, puntoGuardado.lon], {{
+                    icon: L.icon({{
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    }})
+                }}).addTo(map);
+                
+                // Crear círculo con el radio de búsqueda
+                circuloRadio = L.circle([puntoGuardado.lat, puntoGuardado.lon], {{
+                    color: 'red',
+                    fillColor: '#f03',
+                    fillOpacity: 0.2,
+                    radius: puntoGuardado.radio * 1000 // Convertir km a metros
+                }}).addTo(map);
+                
+                // Actualizar texto de coordenadas
+                document.getElementById('selected-lat').textContent = puntoGuardado.lat.toFixed(6);
+                document.getElementById('selected-lng').textContent = puntoGuardado.lon.toFixed(6);
+                
+                // Centrar el mapa en el punto guardado
+                map.setView([puntoGuardado.lat, puntoGuardado.lon], 10);
+            }}
+        </script>
+        """
         
-        # Configurar la vista inicial
-        vista_inicial = pdk.ViewState(
-            longitude=centro_lon,
-            latitude=centro_lat,
-            zoom=9,
-            pitch=0
-        )
+        # Mostrar el mapa
+        st.components.v1.html(mapa_html, height=600)
         
-        # Crear la capa de puntos
-        capa_puntos = pdk.Layer(
-            'ScatterplotLayer',
-            data=mapa_datos,
-            get_position='position',
-            get_color='color',
-            get_radius='radius',
-            pickable=True
-        )
+        # Capturar coordenadas del mapa
+        map_result = st.components.v1.html(height=0)
         
-        # Crear el mapa
-        mapa = pdk.Deck(
-            map_style='mapbox://styles/mapbox/satellite-v9',
-            initial_view_state=vista_inicial,
-            layers=[capa_puntos],
-            tooltip={"text": "{tooltip}"}
-        )
-        
-        # Mostrar el mapa y capturar clics
-        deck_json = mapa.to_json()
-        r = st.pydeck_chart(deck_json)
-        
-        # Capturar clics en el mapa
-        st.write("**Seleccionar punto en el mapa:**")
-        col_map_lat, col_map_lon = st.columns(2)
-        with col_map_lat:
-            map_lat = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
-        with col_map_lon:
-            map_lon = st.number_input("Longitud", value=-58.381592, format="%.6f", step=0.000001)
-        
-        if st.button("Buscar en estas coordenadas", key="btn_map_search"):
-            st.session_state.punto_seleccionado = (map_lat, map_lon)
+        # Si el componente devuelve coordenadas, actualizarlas en session_state
+        if map_result and isinstance(map_result, dict) and 'lat' in map_result and 'lng' in map_result:
+            st.session_state.punto_seleccionado = (map_result['lat'], map_result['lng'])
             st.session_state.busqueda_realizada = True
             st.experimental_rerun()
         
-        # Botón para capturar clic en el mapa (simulado)
-        st.markdown("---")
-        st.write("**¿Has hecho clic en el mapa pero no se actualiza?**")
-        st.write("Como el clic directo puede no funcionar en todos los navegadores, puedes:")
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("📌 Capturar punto actual"):
-                st.success("Punto capturado. Los resultados se mostrarán a la derecha.")
-                st.session_state.punto_seleccionado = (map_lat, map_lon)
-                st.session_state.busqueda_realizada = True
-        with col_btn2:
-            if st.button("🔄 Limpiar selección"):
-                st.session_state.punto_seleccionado = None
-                st.session_state.busqueda_realizada = False
-                st.experimental_rerun()
+        # Opción para ingresar coordenadas manualmente
+        st.subheader("O ingresa coordenadas manualmente:")
+        col_lat, col_lon = st.columns(2)
+        with col_lat:
+            lat_input = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
+        with col_lon:
+            lon_input = st.number_input("Longitud", value=-58.381592, format="%.6f", step=0.000001)
+        
+        if st.button("Buscar en estas coordenadas"):
+            st.session_state.punto_seleccionado = (lat_input, lon_input)
+            st.session_state.busqueda_realizada = True
+            st.experimental_rerun()
     else:
-        st.warning("No hay datos válidos de ubicación para mostrar en el mapa.")
+        st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
 
 # Panel de resultados
 with col2:
@@ -308,7 +406,7 @@ with col2:
         cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
         
         if cuits_cercanos:
-            st.subheader(f"Productores en radio de {radio_busqueda} km:")
+            st.subheader(f"Productores cercanos (radio {radio_busqueda} km):")
             
             # Mostrar número de productores encontrados
             st.info(f"Se encontraron {len(cuits_cercanos)} productores cercanos.")
@@ -345,8 +443,8 @@ with col2:
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
-1. **Selección en mapa**: Haz clic en cualquier punto del mapa o ingresa coordenadas manualmente.
-2. **Captura de punto**: Si el clic directo no funciona, usa el botón "Capturar punto actual".
+1. **Selección en mapa**: Haz clic en cualquier punto del mapa.
+2. **Usar coordenadas**: Haz clic en el botón "Usar estas coordenadas" para consultar el punto seleccionado.
 3. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
 4. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
 5. **Radio de búsqueda**: Ajusta el radio para ver productores a mayor o menor distancia.
