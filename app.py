@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import pydeck as pdk
 import math
 
 # Configuración de la página
@@ -161,44 +162,116 @@ radio_busqueda = st.sidebar.slider(
     step=0.5
 )
 
-# Contenedor para mostrar el mapa y las coordenadas
-col1, col2 = st.columns([3, 1])
+# Crear mapa
+if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
+    # Calcular centro del mapa
+    centro_lat = datos_filtrados['latitud'].mean()
+    centro_lon = datos_filtrados['longitud'].mean()
+    
+    # Preparar datos para el mapa
+    mapa_datos = []
+    for idx, fila in datos_filtrados.iterrows():
+        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+            mapa_datos.append({
+                'position': [fila['longitud'], fila['latitud']],
+                'tooltip': f"CUIT: {fila['cuit']}, Titular: {fila['titular']}",
+                'color': [0, 0, 255, 160],  # RGBA
+                'radius': 100
+            })
+    
+    # Definir la vista inicial del mapa
+    vista_inicial = pdk.ViewState(
+        longitude=centro_lon,
+        latitude=centro_lat,
+        zoom=9,
+        pitch=0
+    )
+    
+    # Crear la capa de puntos
+    capa_puntos = pdk.Layer(
+        'ScatterplotLayer',
+        data=mapa_datos,
+        get_position='position',
+        get_color='color',
+        get_radius='radius',
+        pickable=True
+    )
+    
+    # Crear el mapa
+    mapa = pdk.Deck(
+        map_style='mapbox://styles/mapbox/satellite-v9',
+        initial_view_state=vista_inicial,
+        layers=[capa_puntos],
+        tooltip={"text": "{tooltip}"}
+    )
+    
+    # Mostrar el mapa
+    st.pydeck_chart(mapa)
+else:
+    st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
+
+# Contenedor para formulario y resultados
+col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("Mapa de Productores")
-    
-    # Verificar que existan coordenadas para mostrar en el mapa
-    if not datos_filtrados.empty and 'latitud' in datos_filtrados.columns and 'longitud' in datos_filtrados.columns:
-        # Preparar datos para el mapa
-        # st.map espera un DataFrame con columnas 'latitude' y 'longitude'
-        mapa_df = datos_filtrados[['latitud', 'longitud']].copy()
-        mapa_df.columns = ['latitude', 'longitude']  # Renombrar para st.map
-        
-        # Mostrar el mapa con los puntos
-        st.map(mapa_df)
-        
-        # Nota informativa sobre el mapa
-        st.info("""
-        Este mapa muestra las ubicaciones de los productores. 
-        Para consultar un punto específico, ingresa las coordenadas manualmente a continuación.
-        """)
-    else:
-        st.warning("No hay coordenadas disponibles para mostrar en el mapa.")
+    st.subheader("Consulta por coordenadas")
     
     # Campos para ingresar coordenadas manualmente
-    st.subheader("Ingresar coordenadas para consulta")
-    col_lat, col_lon = st.columns(2)
-    with col_lat:
+    lat_col, lon_col = st.columns(2)
+    with lat_col:
         latitud = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
-    with col_lon:
+    with lon_col:
         longitud = st.number_input("Longitud", value=-58.381592, format="%.6f", step=0.000001)
     
     if st.button("Buscar en estas coordenadas"):
         st.session_state.punto_seleccionado = (latitud, longitud)
         st.session_state.busqueda_realizada = True
         
-        # Mostrar un mensaje con las coordenadas seleccionadas
-        st.success(f"Buscando en: Latitud {latitud}, Longitud {longitud}")
+        # Si se realiza una búsqueda, mostrar un punto en el mapa con la ubicación seleccionada
+        punto_datos = [{
+            'position': [longitud, latitud],
+            'tooltip': "Ubicación seleccionada",
+            'color': [255, 0, 0, 200],
+            'radius': 150
+        }]
+        
+        # Agregar los puntos de los productores
+        for idx, fila in datos_filtrados.iterrows():
+            if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+                punto_datos.append({
+                    'position': [fila['longitud'], fila['latitud']],
+                    'tooltip': f"CUIT: {fila['cuit']}, Titular: {fila['titular']}",
+                    'color': [0, 0, 255, 160],
+                    'radius': 100
+                })
+        
+        # Crear la vista centrada en el punto seleccionado
+        vista_punto = pdk.ViewState(
+            longitude=longitud,
+            latitude=latitud,
+            zoom=11,
+            pitch=0
+        )
+        
+        # Crear la capa de puntos
+        capa_punto = pdk.Layer(
+            'ScatterplotLayer',
+            data=punto_datos,
+            get_position='position',
+            get_color='color',
+            get_radius='radius',
+            pickable=True
+        )
+        
+        # Crear el mapa
+        mapa_punto = pdk.Deck(
+            map_style='mapbox://styles/mapbox/satellite-v9',
+            initial_view_state=vista_punto,
+            layers=[capa_punto],
+            tooltip={"text": "{tooltip}"}
+        )
+        
+        st.pydeck_chart(mapa_punto)
 
 with col2:
     st.subheader("Resultados de la búsqueda")
@@ -211,7 +284,7 @@ with col2:
         cuit_mas_cercano = encontrar_cuit_mas_cercano(lat, lon, datos_filtrados)
         
         if cuit_mas_cercano:
-            st.subheader("Productor más cercano:")
+            st.success("### Productor más cercano:")
             st.markdown(f"""
             **CUIT:** {cuit_mas_cercano['cuit']}  
             **Titular:** {cuit_mas_cercano['titular']}  
@@ -220,14 +293,6 @@ with col2:
             **Superficie:** {cuit_mas_cercano.get('superficie', 'No disponible')} ha  
             **Distancia:** {cuit_mas_cercano['distancia']} km  
             """)
-            
-            # Mostrar el punto más cercano en un mapa pequeño
-            st.subheader("Ubicación del productor más cercano:")
-            punto_cercano_df = pd.DataFrame({
-                'latitude': [cuit_mas_cercano['latitud']],
-                'longitude': [cuit_mas_cercano['longitud']]
-            })
-            st.map(punto_cercano_df)
         
         # Buscar CUITs cercanos
         cuits_cercanos = encontrar_cuits_cercanos(lat, lon, datos_filtrados, radio_km=radio_busqueda)
@@ -237,16 +302,6 @@ with col2:
             
             # Mostrar cuántos productores se encontraron
             st.info(f"Se encontraron {len(cuits_cercanos)} productores en el radio especificado.")
-            
-            # Crear un DataFrame para mostrar en el mapa
-            if len(cuits_cercanos) > 0:
-                cercanos_df = pd.DataFrame([{
-                    'latitude': c['latitud'],
-                    'longitude': c['longitud']
-                } for c in cuits_cercanos])
-                
-                st.subheader("Mapa de productores cercanos:")
-                st.map(cercanos_df)
             
             # Mostrar los productores cercanos
             for i, cercano in enumerate(cuits_cercanos[:5]):  # Mostrar los 5 más cercanos
