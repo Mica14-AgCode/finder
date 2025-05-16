@@ -3,6 +3,7 @@ import pandas as pd
 import math
 import os
 import json
+import time
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -20,6 +21,12 @@ if 'radio_busqueda' not in st.session_state:
     st.session_state.radio_busqueda = 200.0
 if 'mostrar_resultado' not in st.session_state:
     st.session_state.mostrar_resultado = False
+if 'busqueda_realizada' not in st.session_state:
+    st.session_state.busqueda_realizada = False
+if 'productores_cercanos' not in st.session_state:
+    st.session_state.productores_cercanos = []
+if 'timestamp_ultima_busqueda' not in st.session_state:
+    st.session_state.timestamp_ultima_busqueda = 0
 
 # Funciones básicas
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -85,7 +92,6 @@ def punto_en_poligono(latitud, longitud, poligono_wkt):
         
         return inside
     except Exception as e:
-        st.error(f"Error al verificar si el punto está en el polígono: {e}")
         return False
 
 def wkt_a_coordenadas(wkt_str):
@@ -111,7 +117,6 @@ def wkt_a_coordenadas(wkt_str):
         
         return coords
     except Exception as e:
-        st.error(f"Error al convertir polígono WKT: {e}")
         return []
 
 def crear_datos_ejemplo():
@@ -139,7 +144,6 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
     try:
         # Verificar si el archivo existe
         if not os.path.exists(ruta_archivo):
-            st.error(f"El archivo {ruta_archivo} no existe. Usando datos de ejemplo.")
             return crear_datos_ejemplo()
         
         # Cargar el CSV
@@ -150,12 +154,10 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
         columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
         
         if columnas_faltantes:
-            st.error(f"El archivo CSV no contiene las columnas necesarias: {', '.join(columnas_faltantes)}")
             return crear_datos_ejemplo()
         
         return df
     except Exception as e:
-        st.error(f"Error al cargar los datos: {e}")
         return crear_datos_ejemplo()
 
 def encontrar_productor_contenedor(lat, lon, datos):
@@ -227,6 +229,19 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
     
     return cercanos
 
+# Función para recibir coordenadas de JavaScript
+def procesar_mensaje_js(lat, lon):
+    """Procesa un mensaje de coordenadas desde JavaScript"""
+    st.session_state.punto_seleccionado = (lat, lon)
+    st.session_state.mostrar_resultado = True
+    st.session_state.busqueda_realizada = True
+    st.session_state.timestamp_ultima_busqueda = time.time()
+    
+    # Buscar productores cercanos
+    st.session_state.productores_cercanos = encontrar_cuits_cercanos(
+        lat, lon, datos_productores, radio_km=st.session_state.radio_busqueda
+    )
+
 # Panel lateral
 with st.sidebar:
     st.header("Instrucciones")
@@ -262,6 +277,16 @@ if not datos_productores.empty:
     cuits_unicos = datos_productores['cuit'].nunique()
     st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
 
+# Procesar coordenadas desde componente personalizado
+coordinates_received = st.empty()
+if "coordinates" in st.session_state:
+    lat, lon = st.session_state.coordinates
+    
+    # Evitar múltiples recargas en corto tiempo
+    if time.time() - st.session_state.timestamp_ultima_busqueda > 2:  # Mínimo 2 segundos entre búsquedas
+        procesar_mensaje_js(lat, lon)
+        del st.session_state.coordinates  # Limpiar para evitar búsquedas repetidas
+
 # Layout principal
 col1, col2 = st.columns([3, 1])
 
@@ -279,23 +304,24 @@ with col1:
     # Preparar polígonos para la respuesta
     poligonos_result = []
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
-        lat, lon = st.session_state.punto_seleccionado
-        productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
-        
-        # Solo incluir polígonos de productores cercanos
-        cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
-        if 'poligono' in datos_productores.columns:
-            for idx, fila in datos_productores.iterrows():
-                if pd.notna(fila['poligono']) and fila['cuit'] in cuits_cercanos:
-                    coords = wkt_a_coordenadas(fila['poligono'])
-                    if coords:
-                        poligonos_result.append({
-                            'coords': coords,
-                            'cuit': fila['cuit'],
-                            'titular': fila['titular'],
-                            'latitud': float(fila['latitud']),
-                            'longitud': float(fila['longitud'])
-                        })
+        # Usar los productores cercanos ya calculados
+        if st.session_state.productores_cercanos:
+            productores_cercanos = st.session_state.productores_cercanos
+            
+            # Solo incluir polígonos de productores cercanos
+            cuits_cercanos = [prod['cuit'] for prod in productores_cercanos]
+            if 'poligono' in datos_productores.columns:
+                for idx, fila in datos_productores.iterrows():
+                    if pd.notna(fila['poligono']) and fila['cuit'] in cuits_cercanos:
+                        coords = wkt_a_coordenadas(fila['poligono'])
+                        if coords:
+                            poligonos_result.append({
+                                'coords': coords,
+                                'cuit': fila['cuit'],
+                                'titular': fila['titular'],
+                                'latitud': float(fila['latitud']),
+                                'longitud': float(fila['longitud'])
+                            })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -395,7 +421,7 @@ with col1:
                 }});
                 
                 // Agregar capa base - OpenStreetMap
-                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}/{{z}}/{{x}}/{{y}}.png', {{
+                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }});
                 
@@ -445,7 +471,7 @@ with col1:
                         return;
                     }}
                     
-                    buscarCoordenadas(selectedCoords[0], selectedCoords[1]);
+                    enviarCoordenadas(selectedCoords[0], selectedCoords[1]);
                 }});
                 
                 // Si hay un punto seleccionado anteriormente, mostrarlo
@@ -475,7 +501,7 @@ with col1:
                         polygon.bindPopup(`
                             <strong>CUIT:</strong> ${{poligono.cuit}}<br>
                             <strong>Razón Social:</strong> ${{poligono.titular}}<br>
-                            <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                            <button onclick="enviarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
                                 Buscar este productor
                             </button>
                         `);
@@ -483,25 +509,18 @@ with col1:
                 }});
             }}
             
-            // Función para buscar en coordenadas
-            function buscarCoordenadas(lat, lng) {{
+            // Función para enviar coordenadas a Streamlit
+            function enviarCoordenadas(lat, lng) {{
                 // Mostrar mensaje de búsqueda
                 showMessage(`Buscando productores cercanos a Lat: ${{lat.toFixed(6)}}, Lng: ${{lng.toFixed(6)}}...`);
                 
-                // Redirigir a la misma página con parámetros
-                const urlBase = window.location.pathname;
-                const params = new URLSearchParams(window.location.search);
-                
-                // Añadir parámetros de coordenadas y acción
-                params.set('lat', lat.toString());
-                params.set('lng', lng.toString());
-                params.set('action', 'search');
-                
-                // Construir URL completa
-                const url = `${{urlBase}}?${{params.toString()}}`;
-                
-                // Redirigir
-                window.location.href = url;
+                // Comunicación con Streamlit mediante componentes
+                if (window.parent && window.parent.Streamlit) {{
+                    window.parent.Streamlit.setComponentValue({{
+                        coordinates: [lat, lng]
+                    }});
+                    console.log("Coordenadas enviadas vía setComponentValue:", lat, lng);
+                }}
             }}
         </script>
     </body>
@@ -514,55 +533,6 @@ with col1:
 with col2:
     st.subheader("Resultados de la búsqueda")
     
-    # Verificar si hay parámetros en la URL para realizar la búsqueda
-    try:
-        # Usar st.query_params en lugar de experimental_get_query_params
-        query_params = st.query_params
-        if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
-            try:
-                lat = float(query_params['lat'])
-                lon = float(query_params['lng'])
-                action = query_params['action']
-                
-                # Solo realizar la búsqueda si la acción es "search"
-                if action == "search":
-                    st.session_state.punto_seleccionado = (lat, lon)
-                    st.session_state.mostrar_resultado = True
-                    
-                    # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                    # Actualizar para usar el nuevo método
-                    for key in list(query_params.keys()):
-                        del query_params[key]
-                    
-                    # Forzar recarga para mostrar resultados actualizados
-                    st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Error al procesar las coordenadas desde la URL: {e}")
-    except:
-        # Fallback para versiones anteriores de Streamlit
-        try:
-            query_params = st.experimental_get_query_params()
-            if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
-                try:
-                    lat = float(query_params['lat'][0])
-                    lon = float(query_params['lng'][0])
-                    action = query_params['action'][0]
-                    
-                    # Solo realizar la búsqueda si la acción es "search"
-                    if action == "search":
-                        st.session_state.punto_seleccionado = (lat, lon)
-                        st.session_state.mostrar_resultado = True
-                        
-                        # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                        st.experimental_set_query_params()
-                        
-                        # Forzar recarga para mostrar resultados actualizados
-                        st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Error al procesar las coordenadas desde la URL: {e}")
-        except Exception as e:
-            st.warning(f"No se pudo acceder a los parámetros de la URL. Por favor utiliza una versión más reciente de Streamlit. Error: {e}")
-    
     # Mostrar resultados si tenemos un punto seleccionado
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
         lat, lon = st.session_state.punto_seleccionado
@@ -570,9 +540,14 @@ with col2:
         # Mostrar las coordenadas del punto seleccionado
         st.success(f"Punto seleccionado: Lat {lat:.6f}, Lng {lon:.6f}")
         
-        # Buscar productores cercanos
-        with st.spinner(f"Buscando productores en un radio de {radio_busqueda} km..."):
-            productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+        # Buscar productores cercanos si no se ha realizado la búsqueda
+        if not st.session_state.busqueda_realizada or not st.session_state.productores_cercanos:
+            with st.spinner(f"Buscando productores en un radio de {radio_busqueda} km..."):
+                st.session_state.productores_cercanos = encontrar_cuits_cercanos(lat, lon, datos_productores, radio_km=radio_busqueda)
+                st.session_state.busqueda_realizada = True
+        
+        # Usar los resultados almacenados
+        productores_cercanos = st.session_state.productores_cercanos
         
         if productores_cercanos:
             # Contar razones sociales únicas
@@ -639,7 +614,7 @@ with col2:
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
-1. **Selección de punto**: Haz clic en cualquier punto del mapa para seleccionarlo automáticamente.
+1. **Selección de punto**: Haz clic en cualquier punto del mapa para seleccionarlo.
 2. **Búsqueda**: Haz clic en el botón "Buscar en estas coordenadas" para encontrar productores cercanos.
 3. **Visualización de polígonos**: Los polígonos de los productores cercanos se mostrarán en el mapa tras la búsqueda.
 4. **Radio de búsqueda**: Ajusta el radio de búsqueda en el panel lateral para ampliar o reducir el área de búsqueda.
