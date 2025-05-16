@@ -4,10 +4,10 @@ import math
 import os
 import json
 
-# Configuración de la página
+# Configuración de la página - forzar reinicio si ya hay duplicación
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
 
-# Título de la aplicación
+# Título de la aplicación (único)
 st.title("Visor de Productores Agrícolas")
 
 # Ruta al archivo CSV
@@ -85,7 +85,6 @@ def punto_en_poligono(latitud, longitud, poligono_wkt):
         
         return inside
     except Exception as e:
-        st.error(f"Error al verificar si el punto está en el polígono: {e}")
         return False
 
 def wkt_a_coordenadas(wkt_str):
@@ -111,7 +110,6 @@ def wkt_a_coordenadas(wkt_str):
         
         return coords
     except Exception as e:
-        st.error(f"Error al convertir polígono WKT: {e}")
         return []
 
 def crear_datos_ejemplo():
@@ -139,7 +137,6 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
     try:
         # Verificar si el archivo existe
         if not os.path.exists(ruta_archivo):
-            st.error(f"El archivo {ruta_archivo} no existe. Usando datos de ejemplo.")
             return crear_datos_ejemplo()
         
         # Cargar el CSV
@@ -150,12 +147,10 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
         columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
         
         if columnas_faltantes:
-            st.error(f"El archivo CSV no contiene las columnas necesarias: {', '.join(columnas_faltantes)}")
             return crear_datos_ejemplo()
         
         return df
     except Exception as e:
-        st.error(f"Error al cargar los datos: {e}")
         return crear_datos_ejemplo()
 
 def encontrar_productor_contenedor(lat, lon, datos):
@@ -227,6 +222,15 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=200):
     
     return cercanos
 
+# Cargar datos
+datos_productores = cargar_datos()
+
+# Si hay datos, mostrar información básica
+if not datos_productores.empty:
+    # Contar CUITs únicos
+    cuits_unicos = datos_productores['cuit'].nunique()
+    st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
+
 # Panel lateral
 with st.sidebar:
     st.header("Instrucciones")
@@ -253,41 +257,7 @@ with st.sidebar:
     )
     st.session_state.radio_busqueda = radio_busqueda
 
-# Cargar datos
-datos_productores = cargar_datos()
-
-# Si hay datos, mostrar información básica
-if not datos_productores.empty:
-    # Contar CUITs únicos
-    cuits_unicos = datos_productores['cuit'].nunique()
-    st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
-
-# Modo depuración opcional
-show_debug = st.checkbox("Mostrar información de depuración")
-if show_debug:
-    st.write("Estado de la aplicación:")
-    st.write({
-        "punto_seleccionado": st.session_state.punto_seleccionado,
-        "mostrar_resultado": st.session_state.mostrar_resultado,
-        "radio_busqueda": st.session_state.radio_busqueda
-    })
-    
-    if 'poligono' in datos_productores.columns:
-        st.write(f"La columna 'poligono' existe en el CSV")
-        
-        # Mostrar algunos ejemplos de polígonos
-        poligonos_count = datos_productores['poligono'].notna().sum()
-        st.write(f"Número de polígonos en el CSV: {poligonos_count}")
-        
-        if poligonos_count > 0:
-            st.write("Ejemplos de polígonos del CSV:")
-            for i, fila in datos_productores.iterrows():
-                if pd.notna(fila.get('poligono')):
-                    poligono_text = str(fila['poligono'])
-                    st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
-                    break
-
-# Layout principal
+# Layout principal (única vez)
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -420,8 +390,6 @@ with col1:
             document.addEventListener('DOMContentLoaded', initMap);
             
             function initMap() {{
-                console.log("Iniciando mapa...");
-                
                 // Crear el mapa
                 map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
                 
@@ -453,7 +421,6 @@ with col1:
                 // Dibujar polígonos solo si hay resultados de búsqueda
                 if (mostrarResultado && poligonos.length > 0) {{
                     dibujarResultados();
-                    console.log(`Se dibujaron ${{poligonos.length}} elementos en el mapa`);
                 }}
                 
                 // Evento de clic en el mapa
@@ -589,12 +556,10 @@ with col2:
                     params_procesados = True
                     
                     # No usar experimental_rerun, puede causar problemas
-            except Exception as e:
-                if show_debug:
-                    st.error(f"Error al procesar query_params: {e}")
-    except Exception as e:
-        if show_debug:
-            st.error(f"Error accediendo a st.query_params: {e}")
+            except:
+                pass
+    except:
+        pass
     
     # Fallback para versiones anteriores de Streamlit
     if not params_procesados:
@@ -615,14 +580,10 @@ with col2:
                         st.experimental_set_query_params()
                         
                         params_procesados = True
-                        
-                        # No usar experimental_rerun, puede causar problemas
-                except Exception as e:
-                    if show_debug:
-                        st.error(f"Error al procesar experimental_get_query_params: {e}")
-        except Exception as e:
-            if show_debug:
-                st.error(f"Error accediendo a experimental_get_query_params: {e}")
+                except:
+                    pass
+        except:
+            pass
     
     # Mostrar resultados si tenemos un punto seleccionado
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
@@ -696,7 +657,7 @@ with col2:
     else:
         st.info("Haz clic en el mapa para seleccionar un punto y buscar productores cercanos")
 
-# Instrucciones para usar el mapa
+# Instrucciones para usar el mapa (solo una vez al final)
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
