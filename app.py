@@ -17,6 +17,10 @@ if 'punto_seleccionado' not in st.session_state:
     st.session_state.punto_seleccionado = None
 if 'busqueda_realizada' not in st.session_state:
     st.session_state.busqueda_realizada = False
+if 'latitud_input' not in st.session_state:
+    st.session_state.latitud_input = -34.603722
+if 'longitud_input' not in st.session_state:
+    st.session_state.longitud_input = -58.381592
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -304,17 +308,11 @@ with col1:
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Enviar las coordenadas a Streamlit
-                    const data = {{
-                        lat: lat,
-                        lng: lng
-                    }};
-                    
-                    // Actualizar el estado de Streamlit
+                    // Actualizar los inputs de coordenadas para ser recogidos por Streamlit
                     window.parent.postMessage({{
-                        type: "streamlit:setComponentValue",
-                        value: data
-                    }}, "*");
+                        type: 'streamlit:setComponentValue',
+                        value: {{ lat: lat, lng: lng }}
+                    }}, '*');
                 }}
             }});
             
@@ -351,25 +349,18 @@ with col1:
         </script>
         """
         
-        # Mostrar el mapa
+        # Mostrar el mapa con Leaflet
         st.components.v1.html(mapa_html, height=600)
-        
-        # Capturar coordenadas del mapa
-        map_result = st.components.v1.html(height=0)
-        
-        # Si el componente devuelve coordenadas, actualizarlas en session_state
-        if map_result and isinstance(map_result, dict) and 'lat' in map_result and 'lng' in map_result:
-            st.session_state.punto_seleccionado = (map_result['lat'], map_result['lng'])
-            st.session_state.busqueda_realizada = True
-            st.experimental_rerun()
         
         # Opción para ingresar coordenadas manualmente
         st.subheader("O ingresa coordenadas manualmente:")
         col_lat, col_lon = st.columns(2)
         with col_lat:
-            lat_input = st.number_input("Latitud", value=-34.603722, format="%.6f", step=0.000001)
+            lat_input = st.number_input("Latitud", value=st.session_state.latitud_input, format="%.6f", step=0.000001, key="lat_input")
+            st.session_state.latitud_input = lat_input
         with col_lon:
-            lon_input = st.number_input("Longitud", value=-58.381592, format="%.6f", step=0.000001)
+            lon_input = st.number_input("Longitud", value=st.session_state.longitud_input, format="%.6f", step=0.000001, key="lon_input")
+            st.session_state.longitud_input = lon_input
         
         if st.button("Buscar en estas coordenadas"):
             st.session_state.punto_seleccionado = (lat_input, lon_input)
@@ -438,6 +429,19 @@ with col2:
             st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
     else:
         st.info("👈 Haz clic en el mapa o ingresa coordenadas manualmente para ver resultados.")
+
+# Verificar si hay un mensaje del componente HTML
+if 'lat' in st.query_params and 'lng' in st.query_params:
+    try:
+        lat = float(st.query_params['lat'][0])
+        lng = float(st.query_params['lng'][0])
+        st.session_state.punto_seleccionado = (lat, lng)
+        st.session_state.busqueda_realizada = True
+        # Limpiar los parámetros para evitar re-ejecutar la búsqueda
+        del st.query_params['lat']
+        del st.query_params['lng']
+    except:
+        pass
 
 # Instrucciones de uso
 st.markdown("---")
