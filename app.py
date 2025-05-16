@@ -96,7 +96,7 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
                     'latitud': fila['latitud'],
                     'longitud': fila['longitud'],
                     'poligono': fila['poligono'] if 'poligono' in fila else None,
-                    'idx': idx
+                    'idx': int(idx)
                 }
     
     return cuit_cercano
@@ -127,7 +127,7 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
                     'latitud': fila['latitud'],
                     'longitud': fila['longitud'],
                     'poligono': fila['poligono'] if 'poligono' in fila else None,
-                    'idx': idx
+                    'idx': int(idx)
                 })
     
     # Ordenar por distancia
@@ -244,6 +244,7 @@ if archivo_subido is not None:
         "tipo": archivo_subido.type,
         "b64": b64_data
     }
+    st.sidebar.success(f"Archivo cargado: {archivo_subido.name}")
 
 # Layout principal
 col1, col2 = st.columns([3, 1])
@@ -291,6 +292,7 @@ with col1:
                 height: 500px;
                 border-radius: 8px;
                 box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                position: relative;
             }}
             #selected-coords {{
                 margin-top: 10px;
@@ -323,39 +325,20 @@ with col1:
                 font-weight: bold;
                 color: #333;
             }}
-            .leaflet-control-geocoder {{
+            .search-control {{
                 position: absolute;
                 top: 10px;
                 left: 50px;
                 z-index: 1000;
-                width: 250px !important;
+                width: 300px;
             }}
-            .leaflet-control-geocoder-form input {{
+            .search-input {{
                 width: 100%;
-                padding: 8px 10px;
-                font-size: 14px;
+                padding: 10px 15px;
                 border-radius: 4px;
                 border: 1px solid #ccc;
-                box-shadow: 0 1px 5px rgba(0,0,0,0.15);
-            }}
-            .leaflet-control-geocoder-form input::placeholder {{
-                color: #888;
-            }}
-            .leaflet-control-geocoder-alternatives {{
-                width: 100%;
-                max-height: 200px;
-                overflow-y: auto;
-                background: white;
-                border-radius: 4px;
-                box-shadow: 0 1px 5px rgba(0,0,0,0.15);
-            }}
-            .leaflet-control-geocoder-alternatives li {{
-                padding: 6px 10px;
-                border-bottom: 1px solid #eee;
-                cursor: pointer;
-            }}
-            .leaflet-control-geocoder-alternatives li:hover {{
-                background-color: #f0f0f0;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                font-size: 14px;
             }}
             .pointing-down-hand {{
                 position: absolute;
@@ -372,8 +355,13 @@ with col1:
             }}
         </style>
         
-        <div id="map"></div>
-        <div class="pointing-down-hand">👇</div>
+        <div id="map">
+            <div class="pointing-down-hand" id="pointing-hand">👇</div>
+            <div class="search-control">
+                <input type="text" id="search-input" class="search-input" placeholder="Buscar ubicación...">
+                <div id="search-results" style="display: none; background: white; max-height: 200px; overflow-y: auto; border-radius: 4px; margin-top: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);"></div>
+            </div>
+        </div>
         <div id="selected-coords">
             <div>
                 <span>Coordenadas seleccionadas:</span>
@@ -390,7 +378,9 @@ with col1:
         
         <script>
             // Inicializar el mapa
-            const map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
+            const map = L.map('map', {{
+                attributionControl: false  // Desactivar atribución para que no interfiera
+            }}).setView([{centro_lat}, {centro_lon}], 9);
             
             // Agregar capa base de satélite (ESRI) por defecto
             const baseLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
@@ -408,63 +398,109 @@ with col1:
                 "Mapa": osmLayer
             }};
             
-            // Agregar control de capas
-            L.control.layers(baseMaps).addTo(map);
+            // Agregar control de capas (abajo a la izquierda)
+            L.control.layers(baseMaps).setPosition('bottomleft').addTo(map);
             
-            // Agregar control de búsqueda de localidades mejorado
-            const geocoder = L.Control.geocoder({{
-                defaultMarkGeocode: false,
-                placeholder: "Buscar localidad...",
-                errorMessage: "No se encontró la localidad",
-                suggestMinLength: 2,
-                suggestTimeout: 100,
-                queryMinLength: 1,
-                geocoder: L.Control.Geocoder.nominatim({{
-                    geocodingQueryParams: {{
-                        countrycodes: 'ar',
-                        limit: 10
-                    }}
-                }})
-            }})
-            .on('markgeocode', function(e) {{
-                const latlng = e.geocode.center;
-                map.setView(latlng, 13);
+            // Mover los controles de zoom abajo a la izquierda
+            map.zoomControl.setPosition('bottomleft');
+            
+            // Agregar atribución en la esquina inferior derecha
+            L.control.attribution({{
+                position: 'bottomright',
+                prefix: 'Leaflet | Tiles © Esri'
+            }}).addTo(map);
+            
+            // Implementar búsqueda de ubicaciones
+            const searchInput = document.getElementById('search-input');
+            const searchResults = document.getElementById('search-results');
+            let searchTimeout;
+            
+            searchInput.addEventListener('input', function() {{
+                clearTimeout(searchTimeout);
+                const query = this.value.trim();
                 
-                // Crear marcador en la ubicación buscada
-                if (puntoSeleccionado) {{
-                    map.removeLayer(puntoSeleccionado);
+                if (query.length < 3) {{
+                    searchResults.style.display = 'none';
+                    return;
                 }}
                 
-                puntoSeleccionado = L.marker(latlng, {{
-                    icon: L.icon({{
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    }})
-                }}).addTo(map);
-                
-                // Actualizar coordenadas
-                document.getElementById('selected-lat').textContent = latlng.lat.toFixed(4);
-                document.getElementById('selected-lng').textContent = latlng.lng.toFixed(4);
+                searchTimeout = setTimeout(() => {{
+                    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${{encodeURIComponent(query)}}&countrycodes=ar&limit=5`)
+                        .then(response => response.json())
+                        .then(data => {{
+                            searchResults.innerHTML = '';
+                            
+                            if (data.length === 0) {{
+                                searchResults.style.display = 'none';
+                                return;
+                            }}
+                            
+                            data.forEach(result => {{
+                                const item = document.createElement('div');
+                                item.className = 'search-result-item';
+                                item.style.padding = '8px 12px';
+                                item.style.borderBottom = '1px solid #eee';
+                                item.style.cursor = 'pointer';
+                                item.textContent = result.display_name;
+                                
+                                item.addEventListener('mouseenter', function() {{
+                                    this.style.backgroundColor = '#f0f0f0';
+                                }});
+                                
+                                item.addEventListener('mouseleave', function() {{
+                                    this.style.backgroundColor = '';
+                                }});
+                                
+                                item.addEventListener('click', function() {{
+                                    const lat = parseFloat(result.lat);
+                                    const lon = parseFloat(result.lon);
+                                    
+                                    // Actualizar el mapa
+                                    map.setView([lat, lon], 13);
+                                    
+                                    // Actualizar el marcador
+                                    if (puntoSeleccionado) {{
+                                        map.removeLayer(puntoSeleccionado);
+                                    }}
+                                    
+                                    puntoSeleccionado = L.marker([lat, lon], {{
+                                        icon: L.icon({{
+                                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                                            iconSize: [25, 41],
+                                            iconAnchor: [12, 41],
+                                            popupAnchor: [1, -34],
+                                            shadowSize: [41, 41]
+                                        }})
+                                    }}).addTo(map);
+                                    
+                                    // Actualizar coordenadas
+                                    document.getElementById('selected-lat').textContent = lat.toFixed(4);
+                                    document.getElementById('selected-lng').textContent = lon.toFixed(4);
+                                    
+                                    // Ocultar resultados
+                                    searchResults.style.display = 'none';
+                                    searchInput.value = result.display_name;
+                                }});
+                                
+                                searchResults.appendChild(item);
+                            }});
+                            
+                            searchResults.style.display = 'block';
+                        }})
+                        .catch(error => {{
+                            console.error('Error en la búsqueda:', error);
+                            searchResults.style.display = 'none';
+                        }});
+                }}, 300);
             }});
             
-            // Mover el control de búsqueda a una posición personalizada
-            geocoder.addTo(map);
-            
-            // Reposicionar el control de búsqueda después de agregarlo
-            setTimeout(() => {{
-                const geocoderContainer = document.querySelector('.leaflet-control-geocoder');
-                if (geocoderContainer) {{
-                    // Asegurarse de que el input tenga un placeholder
-                    const input = geocoderContainer.querySelector('input');
-                    if (input) {{
-                        input.placeholder = "Ingrese una localidad...";
-                    }}
+            // Ocultar resultados al hacer clic fuera
+            document.addEventListener('click', function(e) {{
+                if (e.target !== searchInput && e.target !== searchResults) {{
+                    searchResults.style.display = 'none';
                 }}
-            }}, 100);
+            }});
             
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
@@ -479,7 +515,7 @@ with col1:
             const colors = {colors_json};
             
             // Función para dibujar polígonos de productores
-            function dibujarPoligonos(poligonos) {{
+            function dibujarPoligonos() {{
                 // Limpiar los polígonos existentes
                 poligonosLayer.clearLayers();
                 
@@ -591,15 +627,45 @@ with col1:
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Crear un evento personalizado para streamlit
-                    const event = new CustomEvent('streamlit:coordsSelected', {{
-                        detail: {{ lat: lat, lng: lng }}
-                    }});
+                    // Ocultar la mano de puntero después de seleccionar
+                    document.getElementById('pointing-hand').style.display = 'none';
                     
-                    // Disparar el evento
-                    window.dispatchEvent(event);
+                    // Método principal: form post
+                    const form = document.createElement('form');
+                    form.method = 'post';
+                    form.action = window.location.href;
+                    form.style.display = 'none';
                     
-                    // También intentar enviar los datos a través de postMessage
+                    const latInput = document.createElement('input');
+                    latInput.type = 'hidden';
+                    latInput.name = 'lat';
+                    latInput.value = lat;
+                    
+                    const lngInput = document.createElement('input');
+                    lngInput.type = 'hidden';
+                    lngInput.name = 'lng';
+                    lngInput.value = lng;
+                    
+                    form.appendChild(latInput);
+                    form.appendChild(lngInput);
+                    document.body.appendChild(form);
+                    form.submit();
+                    
+                    // Métodos de respaldo
+                    // 1. Parámetros de URL
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('lat', lat);
+                    url.searchParams.set('lng', lng);
+                    
+                    // 2. Cookies
+                    document.cookie = `selected_lat=${{lat}}; path=/;`;
+                    document.cookie = `selected_lng=${{lng}}; path=/;`;
+                    
+                    // 3. LocalStorage
+                    localStorage.setItem('selected_lat', lat);
+                    localStorage.setItem('selected_lng', lng);
+                    
+                    // 4. postMessage a la ventana padre
                     window.parent.postMessage({{
                         type: 'streamlit:setComponentValue',
                         value: {{ lat: lat, lng: lng }}
@@ -609,36 +675,45 @@ with col1:
             
             // Manejador para actualizar los polígonos cercanos
             window.addEventListener('message', function(event) {{
-                const data = event.data;
-                
-                // Comprobar si tenemos datos de polígonos cercanos
-                if (data && data.type === 'cercanos') {{
-                    // Actualizar los polígonos cercanos
-                    colorearPoligonosCercanos(data.cercanos);
+                try {{
+                    const data = event.data;
                     
-                    // Colorear el polígono más cercano
-                    if (data.masCercano) {{
-                        colorearPoligonoMasCercano(data.masCercano);
+                    // Comprobar si tenemos datos de polígonos cercanos
+                    if (data && data.type === 'cercanos') {{
+                        // Actualizar los polígonos cercanos
+                        colorearPoligonosCercanos(data.cercanos);
+                        
+                        // Colorear el polígono más cercano
+                        if (data.masCercano) {{
+                            colorearPoligonoMasCercano(data.masCercano);
+                        }}
                     }}
+                }} catch (e) {{
+                    console.error('Error al procesar mensaje:', e);
                 }}
             }});
             
             // Función para cargar archivo KML/KMZ/Shapefile
             function cargarArchivo(tipo, datos) {{
                 try {{
+                    console.log("Cargando archivo de tipo:", tipo);
+                    
                     // Limpiar la capa de archivos previos
                     archivosLayer.clearLayers();
                     
                     if (tipo.includes('kml')) {{
+                        console.log("Procesando KML...");
                         // Convertir de base64 a texto
                         const texto = atob(datos);
                         
                         // Crear un objeto DOM del KML
                         const parser = new DOMParser();
                         const kml = parser.parseFromString(texto, 'text/xml');
+                        console.log("KML parseado:", kml);
                         
                         // Convertir a GeoJSON usando toGeoJSON
                         const geojson = toGeoJSON.kml(kml);
+                        console.log("GeoJSON generado:", geojson);
                         
                         // Agregar al mapa
                         const kmlLayer = L.geoJSON(geojson, {{
@@ -664,11 +739,18 @@ with col1:
                             map.fitBounds(bounds);
                         }}
                         
+                        console.log("KML cargado correctamente");
+                        
                     }} else if (tipo.includes('zip') || tipo.includes('shp')) {{
+                        console.log("Procesando Shapefile...");
+                        
                         // Usar shpjs para cargar el shapefile
                         const arrayBuffer = base64ToArrayBuffer(datos);
+                        console.log("ArrayBuffer creado de longitud:", arrayBuffer.byteLength);
                         
                         shp(arrayBuffer).then(function(geojson) {{
+                            console.log("GeoJSON generado desde Shapefile:", geojson);
+                            
                             const shpLayer = L.geoJSON(geojson, {{
                                 style: function(feature) {{
                                     return {{
@@ -704,6 +786,8 @@ with col1:
                                     console.error('Error al ajustar los límites:', e);
                                 }}
                             }}
+                            
+                            console.log("Shapefile cargado correctamente");
                         }}).catch(function(error) {{
                             console.error('Error al procesar el shapefile:', error);
                         }});
@@ -715,21 +799,29 @@ with col1:
             
             // Función para convertir Base64 a ArrayBuffer
             function base64ToArrayBuffer(base64) {{
-                const binaryString = atob(base64);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {{
-                    bytes[i] = binaryString.charCodeAt(i);
+                try {{
+                    const binaryString = atob(base64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {{
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }}
+                    return bytes.buffer;
+                }} catch (e) {{
+                    console.error("Error en base64ToArrayBuffer:", e);
+                    return new ArrayBuffer(0);
                 }}
-                return bytes.buffer;
             }}
             
             // Cargar archivo si existe
-            {f"cargarArchivo('{st.session_state.archivo_cargado['tipo']}', '{st.session_state.archivo_cargado['b64']}');" if st.session_state.archivo_cargado else ""}
+            {f"console.log('Intentando cargar archivo: {st.session_state.archivo_cargado['nombre']}'); cargarArchivo('{st.session_state.archivo_cargado['tipo']}', '{st.session_state.archivo_cargado['b64']}');" if st.session_state.archivo_cargado else "console.log('No hay archivo cargado');"}
             
             // Si hay un punto seleccionado previamente, mostrarlo
             {f"const lat = {st.session_state.punto_seleccionado[0]}; const lng = {st.session_state.punto_seleccionado[1]};" if st.session_state.punto_seleccionado else ""}
             {"""
             if (lat && lng) {
+                // Ocultar la mano de puntero si ya hay un punto seleccionado
+                document.getElementById('pointing-hand').style.display = 'none';
+                
                 // Crear marcador para el punto guardado
                 puntoSeleccionado = L.marker([lat, lng], {
                     icon: L.icon({
@@ -750,19 +842,6 @@ with col1:
                 map.setView([lat, lng], 15);
             }
             """ if st.session_state.punto_seleccionado else ""}
-            
-            // Escuchar evento personalizado para coordenadas
-            window.addEventListener('streamlit:coordsSelected', function(e) {{
-                // Enviamos mediante cookies también para mayor compatibilidad
-                document.cookie = `selected_lat=${{e.detail.lat}}; path=/;`;
-                document.cookie = `selected_lng=${{e.detail.lng}}; path=/;`;
-                
-                // Recargar la página con parámetros
-                const url = new URL(window.location.href);
-                url.searchParams.set('lat', e.detail.lat);
-                url.searchParams.set('lng', e.detail.lng);
-                window.location.href = url.toString();
-            }});
         </script>
         """
         
@@ -770,15 +849,31 @@ with col1:
         components_result = st.components.v1.html(mapa_html, height=600)
         
         # Verificar si hay parámetros de coordenadas en la URL
-        query_params = st.experimental_get_query_params()
+        query_params = st.query_params
         if 'lat' in query_params and 'lng' in query_params:
             try:
                 lat = float(query_params['lat'][0])
                 lng = float(query_params['lng'][0])
                 st.session_state.punto_seleccionado = (lat, lng)
                 st.session_state.busqueda_realizada = True
+                # Limpiar los parámetros para evitar repeticiones
+                st.query_params.clear()
             except:
                 pass
+        
+        # Verificar si hay datos en el POST
+        try:
+            form_data = st.experimental_get_query_params()
+            if 'lat' in form_data and 'lng' in form_data:
+                try:
+                    lat = float(form_data['lat'][0])
+                    lng = float(form_data['lng'][0])
+                    st.session_state.punto_seleccionado = (lat, lng)
+                    st.session_state.busqueda_realizada = True
+                except:
+                    pass
+        except:
+            pass
         
         # Procesar los resultados del componente HTML
         if isinstance(components_result, dict) and 'lat' in components_result and 'lng' in components_result:
@@ -787,12 +882,6 @@ with col1:
             st.session_state.busqueda_realizada = True
             st.rerun()
         
-        # Mostrar ayuda para cargar archivos
-        st.markdown("""
-        ### Cargar archivos geoespaciales
-        
-        Puedes subir archivos KML, KMZ o Shapefile (ZIP) desde el panel lateral para visualizarlos en el mapa.
-        """)
     else:
         st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
 
@@ -818,11 +907,16 @@ with col2:
             update_js = f"""
             <script>
             // Enviar datos al mapa
-            window.parent.postMessage({{
-                type: 'cercanos',
-                cercanos: {json.dumps(cuits_cercanos)},
-                masCercano: {json.dumps(cuit_mas_cercano) if cuit_mas_cercano else 'null'}
-            }}, '*');
+            try {{
+                window.parent.postMessage({{
+                    type: 'cercanos',
+                    cercanos: {json.dumps(cuits_cercanos)},
+                    masCercano: {json.dumps(cuit_mas_cercano) if cuit_mas_cercano else 'null'}
+                }}, '*');
+                console.log('Datos de polígonos enviados correctamente');
+            }} catch (e) {{
+                console.error('Error al enviar datos de polígonos:', e);
+            }}
             </script>
             """
             st.components.v1.html(update_js, height=0)
@@ -876,11 +970,11 @@ with col2:
 st.markdown("---")
 st.subheader("Instrucciones de uso")
 st.markdown("""
-1. **Buscar localidad**: Usa la barra de búsqueda en la parte superior del mapa.
+1. **Buscar localidad**: Usa la barra de búsqueda en la parte superior izquierda del mapa.
 2. **Selección en mapa**: Haz clic en cualquier punto del mapa.
 3. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
 4. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
 5. **Filtros**: Usa los filtros en el panel lateral para mostrar productores específicos.
 6. **Radio de búsqueda**: Ajusta o edita directamente el radio para ver productores a mayor o menor distancia.
-7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral.
+7. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral para visualizarlos en el mapa.
 """)
