@@ -21,6 +21,8 @@ if 'latitud_input' not in st.session_state:
     st.session_state.latitud_input = -34.603722
 if 'longitud_input' not in st.session_state:
     st.session_state.longitud_input = -58.381592
+if 'usar_coords_clicked' not in st.session_state:
+    st.session_state.usar_coords_clicked = False
 
 # Funciones básicas para cálculos geoespaciales
 def calcular_distancia_km(lat1, lon1, lat2, lon2):
@@ -143,9 +145,18 @@ datos_productores = cargar_datos()
 # Crear un sidebar para filtros
 st.sidebar.header("Filtros")
 
-# Filtro por CUIT
-cuits_disponibles = ["Todos"] + sorted(list(datos_productores['cuit'].unique()))
-cuit_seleccionado = st.sidebar.selectbox("Filtrar por CUIT:", cuits_disponibles)
+# Filtro por Razón Social (Titular)
+if 'titular' in datos_productores.columns:
+    titulares_disponibles = ["Todos"] + sorted(list(datos_productores['titular'].unique()))
+    titular_seleccionado = st.sidebar.selectbox("Filtrar por Razón Social:", titulares_disponibles)
+    
+    if titular_seleccionado != "Todos":
+        datos_filtrados = datos_productores[datos_productores['titular'] == titular_seleccionado]
+    else:
+        datos_filtrados = datos_productores
+else:
+    datos_filtrados = datos_productores
+    st.sidebar.warning("No se encontró la columna 'titular' en los datos.")
 
 # Filtro por localidad si existe
 if 'localidad' in datos_productores.columns:
@@ -153,15 +164,7 @@ if 'localidad' in datos_productores.columns:
     localidad_seleccionada = st.sidebar.selectbox("Filtrar por localidad:", localidades)
     
     if localidad_seleccionada != "Todas":
-        datos_filtrados = datos_productores[datos_productores['localidad'] == localidad_seleccionada]
-    else:
-        datos_filtrados = datos_productores
-else:
-    datos_filtrados = datos_productores
-
-# Aplicar filtro de CUIT
-if cuit_seleccionado != "Todos":
-    datos_filtrados = datos_filtrados[datos_filtrados['cuit'] == cuit_seleccionado]
+        datos_filtrados = datos_filtrados[datos_filtrados['localidad'] == localidad_seleccionada]
 
 # Radio de búsqueda ajustable
 radio_busqueda = st.sidebar.slider(
@@ -185,30 +188,6 @@ with col1:
         centro_lat = datos_filtrados['latitud'].mean()
         centro_lon = datos_filtrados['longitud'].mean()
         
-        # Preparar los datos para el mapa
-        mapa_datos = []
-        for idx, fila in datos_filtrados.iterrows():
-            if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
-                mapa_datos.append({
-                    'lat': fila['latitud'],
-                    'lon': fila['longitud'],
-                    'cuit': fila['cuit'],
-                    'titular': fila['titular']
-                })
-        
-        # Convertir a JSON para pasar al JavaScript
-        mapa_datos_json = json.dumps(mapa_datos)
-        
-        # Si hay un punto seleccionado, convertirlo a JSON también
-        punto_seleccionado_json = "null"
-        if st.session_state.punto_seleccionado:
-            lat, lon = st.session_state.punto_seleccionado
-            punto_seleccionado_json = json.dumps({
-                'lat': lat,
-                'lon': lon,
-                'radio': radio_busqueda
-            })
-        
         # Código HTML y JavaScript para el mapa Leaflet
         mapa_html = f"""
         <div id="map" style="width:100%; height:500px;"></div>
@@ -224,39 +203,10 @@ with col1:
             // Inicializar el mapa
             const map = L.map('map').setView([{centro_lat}, {centro_lon}], 9);
             
-            // Agregar capa base (OpenStreetMap)
-            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            }}).addTo(map);
-            
-            // Agregar capa de satélite (ESRI)
-            const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            // Agregar capa base de satélite (ESRI) por defecto
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
                 attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
-            }});
-            
-            // Agregar control de capas
-            const baseMaps = {{
-                "Mapa": L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                }}),
-                "Satélite": satellite
-            }};
-            
-            L.control.layers(baseMaps).addTo(map);
-            
-            // Activar la capa de satélite por defecto
-            satellite.addTo(map);
-            
-            // Agregar marcadores para cada productor
-            const datos = {mapa_datos_json};
-            const marcadores = [];
-            
-            datos.forEach(punto => {{
-                const marker = L.marker([punto.lat, punto.lon])
-                    .bindPopup(`<b>CUIT:</b> ${{punto.cuit}}<br><b>Titular:</b> ${{punto.titular}}`);
-                marker.addTo(map);
-                marcadores.push(marker);
-            }});
+            }}).addTo(map);
             
             // Variable para el marcador del punto seleccionado
             let puntoSeleccionado = null;
@@ -267,9 +217,9 @@ with col1:
                 const lat = e.latlng.lat;
                 const lng = e.latlng.lng;
                 
-                // Actualizar el texto con las coordenadas
-                document.getElementById('selected-lat').textContent = lat.toFixed(6);
-                document.getElementById('selected-lng').textContent = lng.toFixed(6);
+                // Actualizar el texto con las coordenadas (con menos decimales)
+                document.getElementById('selected-lat').textContent = lat.toFixed(4);
+                document.getElementById('selected-lng').textContent = lng.toFixed(4);
                 
                 // Si ya hay un marcador, eliminarlo
                 if (puntoSeleccionado) {{
@@ -308,44 +258,28 @@ with col1:
                 const lng = parseFloat(document.getElementById('selected-lng').textContent);
                 
                 if (!isNaN(lat) && !isNaN(lng)) {{
-                    // Actualizar los inputs de coordenadas para ser recogidos por Streamlit
-                    window.parent.postMessage({{
-                        type: 'streamlit:setComponentValue',
-                        value: {{ lat: lat, lng: lng }}
-                    }}, '*');
+                    // Crear un formulario oculto para enviar las coordenadas
+                    var form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = '';
+                    
+                    // Crear campos ocultos para las coordenadas
+                    var latField = document.createElement('input');
+                    latField.type = 'hidden';
+                    latField.name = 'lat';
+                    latField.value = lat;
+                    form.appendChild(latField);
+                    
+                    var lngField = document.createElement('input');
+                    lngField.type = 'hidden';
+                    lngField.name = 'lng';
+                    lngField.value = lng;
+                    form.appendChild(lngField);
+                    
+                    document.body.appendChild(form);
+                    form.submit();
                 }}
             }});
-            
-            // Si hay un punto seleccionado previamente, mostrarlo
-            const puntoGuardado = {punto_seleccionado_json};
-            if (puntoGuardado) {{
-                // Crear marcador para el punto guardado
-                puntoSeleccionado = L.marker([puntoGuardado.lat, puntoGuardado.lon], {{
-                    icon: L.icon({{
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    }})
-                }}).addTo(map);
-                
-                // Crear círculo con el radio de búsqueda
-                circuloRadio = L.circle([puntoGuardado.lat, puntoGuardado.lon], {{
-                    color: 'red',
-                    fillColor: '#f03',
-                    fillOpacity: 0.2,
-                    radius: puntoGuardado.radio * 1000 // Convertir km a metros
-                }}).addTo(map);
-                
-                // Actualizar texto de coordenadas
-                document.getElementById('selected-lat').textContent = puntoGuardado.lat.toFixed(6);
-                document.getElementById('selected-lng').textContent = puntoGuardado.lon.toFixed(6);
-                
-                // Centrar el mapa en el punto guardado
-                map.setView([puntoGuardado.lat, puntoGuardado.lon], 10);
-            }}
         </script>
         """
         
@@ -356,10 +290,10 @@ with col1:
         st.subheader("O ingresa coordenadas manualmente:")
         col_lat, col_lon = st.columns(2)
         with col_lat:
-            lat_input = st.number_input("Latitud", value=st.session_state.latitud_input, format="%.6f", step=0.000001, key="lat_input")
+            lat_input = st.number_input("Latitud", value=st.session_state.latitud_input, format="%.4f", step=0.001, key="lat_input")
             st.session_state.latitud_input = lat_input
         with col_lon:
-            lon_input = st.number_input("Longitud", value=st.session_state.longitud_input, format="%.6f", step=0.000001, key="lon_input")
+            lon_input = st.number_input("Longitud", value=st.session_state.longitud_input, format="%.4f", step=0.001, key="lon_input")
             st.session_state.longitud_input = lon_input
         
         if st.button("Buscar en estas coordenadas"):
@@ -373,11 +307,35 @@ with col1:
 with col2:
     st.subheader("Resultados de la búsqueda")
     
+    # Procesar el formulario si se envió
+    form_data = st.experimental_get_query_params()
+    if "lat" in form_data and "lng" in form_data:
+        try:
+            lat = float(form_data["lat"][0])
+            lng = float(form_data["lng"][0])
+            st.session_state.punto_seleccionado = (lat, lng)
+            st.session_state.busqueda_realizada = True
+        except:
+            pass
+    
+    # Procesar POST request
+    if st.experimental_get_query_params():
+        # Obtener datos del formulario
+        form_data = st.experimental_get_query_params()
+        if "lat" in form_data and "lng" in form_data:
+            try:
+                lat = float(form_data["lat"][0])
+                lng = float(form_data["lng"][0])
+                st.session_state.punto_seleccionado = (lat, lng)
+                st.session_state.busqueda_realizada = True
+            except:
+                pass
+    
     # Mostrar resultados si hay un punto seleccionado
     if st.session_state.busqueda_realizada and st.session_state.punto_seleccionado:
         lat, lon = st.session_state.punto_seleccionado
         
-        st.write(f"**Coordenadas del punto:** Lat {lat:.6f}, Lng {lon:.6f}")
+        st.write(f"**Coordenadas del punto:** Lat {lat:.4f}, Lng {lon:.4f}")
         
         # Buscar el CUIT más cercano
         cuit_mas_cercano = encontrar_cuit_mas_cercano(lat, lon, datos_filtrados)
@@ -386,7 +344,7 @@ with col2:
             st.success("**Productor más cercano:**")
             st.markdown(f"""
             **CUIT:** {cuit_mas_cercano['cuit']}  
-            **Titular:** {cuit_mas_cercano['titular']}  
+            **Razón Social:** {cuit_mas_cercano['titular']}  
             **RENSPA:** {cuit_mas_cercano.get('renspa', 'No disponible')}  
             **Localidad:** {cuit_mas_cercano.get('localidad', 'No disponible')}  
             **Superficie:** {cuit_mas_cercano.get('superficie', 'No disponible')} ha  
@@ -407,7 +365,7 @@ with col2:
             for cercano in cuits_cercanos:
                 tabla_datos.append({
                     "CUIT": cercano['cuit'],
-                    "Titular": cercano['titular'][:20] + "..." if len(cercano['titular']) > 20 else cercano['titular'],
+                    "Razón Social": cercano['titular'][:20] + "..." if len(cercano['titular']) > 20 else cercano['titular'],
                     "Km": cercano['distancia']
                 })
             
@@ -418,30 +376,17 @@ with col2:
                 with st.expander(f"{i+1}. {cercano['titular']} ({cercano['distancia']} km)"):
                     st.markdown(f"""
                     **CUIT:** {cercano['cuit']}  
-                    **Titular:** {cercano['titular']}  
+                    **Razón Social:** {cercano['titular']}  
                     **RENSPA:** {cercano.get('renspa', 'No disponible')}  
                     **Localidad:** {cercano.get('localidad', 'No disponible')}  
                     **Superficie:** {cercano.get('superficie', 'No disponible')} ha  
                     **Distancia:** {cercano['distancia']} km  
-                    **Coordenadas:** Lat {cercano['latitud']}, Lng {cercano['longitud']}
+                    **Coordenadas:** Lat {cercano['latitud']:.4f}, Lng {cercano['longitud']:.4f}
                     """)
         else:
             st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
     else:
         st.info("👈 Haz clic en el mapa o ingresa coordenadas manualmente para ver resultados.")
-
-# Verificar si hay un mensaje del componente HTML
-if 'lat' in st.query_params and 'lng' in st.query_params:
-    try:
-        lat = float(st.query_params['lat'][0])
-        lng = float(st.query_params['lng'][0])
-        st.session_state.punto_seleccionado = (lat, lng)
-        st.session_state.busqueda_realizada = True
-        # Limpiar los parámetros para evitar re-ejecutar la búsqueda
-        del st.query_params['lat']
-        del st.query_params['lng']
-    except:
-        pass
 
 # Instrucciones de uso
 st.markdown("---")
