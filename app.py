@@ -1,35 +1,10 @@
-# Modo de depuración
-if st.session_state.debug:
-    st.warning("MODO DEPURACIÓN ACTIVO. Se mostrarán mensajes adicionales para diagnóstico.")
-    debug_container = st.expander("Información de depuración", expanded=True)
-    with debug_container:
-        st.write("Estado de la aplicación:")
-        st.write(f"Punto seleccionado: {st.session_state.punto_seleccionado}")
-        st.write(f"Búsqueda realizada: {st.session_state.busqueda_realizada}")
-        st.write(f"Radio de búsqueda: {st.session_state.radio_busqueda} km")
-        st.write(f"Archivo cargado: {st.session_state.archivo_cargado['nombre'] if st.session_state.archivo_cargado else 'Ninguno'}")
-        st.write(f"Mostrar resultados: {st.session_state.mostrar_resultados}")
-        
-        # Detectar si se ejecuta localmente o en la nube
-        try:
-            local = os.path.exists(os.path.expanduser("~/.streamlit"))
-            st.write(f"Ejecución: {'Local' if local else 'En la nube'}")
-        except:
-            st.write("No se pudo determinar el entorno de ejecución")
-            
-        # Añadir un botón para simular una búsqueda con valores de prueba
-        if st.button("Simular búsqueda con coordenadas de prueba", key="simular_busqueda"):
-            st.session_state.punto_seleccionado = (-34.1, -60.1)  # Usar coordenadas de prueba
-            st.session_state.busqueda_realizada = True
-            st.session_state.mostrar_resultados = True
-            st.experimental_rerun()import streamlit as st
+import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import math
 import json
 import base64
 import os
-import time
 
 # Configuración de la página
 st.set_page_config(page_title="Visor de Productores Agrícolas", layout="wide")
@@ -79,6 +54,25 @@ def calcular_distancia_km(lat1, lon1, lat2, lon2):
     
     return distancia
 
+def crear_datos_ejemplo():
+    """Crea datos de ejemplo cuando no se puede cargar el CSV"""
+    st.warning("Usando datos de ejemplo para demostración")
+    return pd.DataFrame({
+        'cuit': ['20123456789', '30987654321', '33444555667', '27888999001'],
+        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2', 'Productor Ejemplo 3', 'Productor Ejemplo 4'],
+        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02', '11.222.3.33333/03', '44.555.6.66666/04'],
+        'localidad': ['Localidad 1', 'Localidad 2', 'Localidad 3', 'Localidad 4'],
+        'superficie': [100, 150, 200, 75],
+        'longitud': [-60.0, -60.2, -60.1, -59.9],
+        'latitud': [-34.0, -34.2, -34.1, -33.9],
+        'poligono': [
+            "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
+            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))",
+            "POLYGON((-60.1 -34.1, -60.2 -34.1, -60.2 -34.2, -60.1 -34.2, -60.1 -34.1))",
+            "POLYGON((-59.9 -33.9, -60.0 -33.9, -60.0 -34.0, -59.9 -34.0, -59.9 -33.9))"
+        ]
+    })
+
 # Función para cargar y procesar los datos
 @st.cache_data
 def cargar_datos(ruta_archivo=RUTA_CSV):
@@ -101,32 +95,14 @@ def cargar_datos(ruta_archivo=RUTA_CSV):
             return crear_datos_ejemplo()
         
         # Imprimir información para depuración
-        st.write(f"CSV cargado correctamente con {len(df)} registros.")
-        st.write(f"Columnas: {', '.join(df.columns)}")
+        if st.session_state.debug:
+            st.write(f"CSV cargado correctamente con {len(df)} registros.")
+            st.write(f"Columnas: {', '.join(df.columns)}")
         
         return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
         return crear_datos_ejemplo()
-
-def crear_datos_ejemplo():
-    """Crea datos de ejemplo cuando no se puede cargar el CSV"""
-    st.warning("Usando datos de ejemplo para demostración")
-    return pd.DataFrame({
-        'cuit': ['20123456789', '30987654321', '33444555667', '27888999001'],
-        'titular': ['Productor Ejemplo 1', 'Productor Ejemplo 2', 'Productor Ejemplo 3', 'Productor Ejemplo 4'],
-        'renspa': ['12.345.6.78901/01', '98.765.4.32109/02', '11.222.3.33333/03', '44.555.6.66666/04'],
-        'localidad': ['Localidad 1', 'Localidad 2', 'Localidad 3', 'Localidad 4'],
-        'superficie': [100, 150, 200, 75],
-        'longitud': [-60.0, -60.2, -60.1, -59.9],
-        'latitud': [-34.0, -34.2, -34.1, -33.9],
-        'poligono': [
-            "POLYGON((-60.0 -34.0, -60.1 -34.0, -60.1 -34.1, -60.0 -34.1, -60.0 -34.0))",
-            "POLYGON((-60.2 -34.2, -60.3 -34.2, -60.3 -34.3, -60.2 -34.3, -60.2 -34.2))",
-            "POLYGON((-60.1 -34.1, -60.2 -34.1, -60.2 -34.2, -60.1 -34.2, -60.1 -34.1))",
-            "POLYGON((-59.9 -33.9, -60.0 -33.9, -60.0 -34.0, -59.9 -34.0, -59.9 -33.9))"
-        ]
-    })
 
 # Función para encontrar el CUIT más cercano a un punto
 def encontrar_cuit_mas_cercano(lat, lon, datos):
@@ -135,8 +111,9 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
     cuit_cercano = None
     
     # Para depuración
-    st.write(f"Buscando el CUIT más cercano al punto ({lat}, {lon})")
-    st.write(f"Total de registros en datos: {len(datos)}")
+    if st.session_state.debug:
+        st.write(f"Buscando el CUIT más cercano al punto ({lat}, {lon})")
+        st.write(f"Total de registros en datos: {len(datos)}")
     
     for idx, fila in datos.iterrows():
         if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
@@ -161,10 +138,11 @@ def encontrar_cuit_mas_cercano(lat, lon, datos):
                 }
     
     # Para depuración
-    if cuit_cercano:
-        st.write(f"CUIT más cercano encontrado: {cuit_cercano['cuit']} a {cuit_cercano['distancia']} km")
-    else:
-        st.write("No se encontró ningún CUIT cercano")
+    if st.session_state.debug:
+        if cuit_cercano:
+            st.write(f"CUIT más cercano encontrado: {cuit_cercano['cuit']} a {cuit_cercano['distancia']} km")
+        else:
+            st.write("No se encontró ningún CUIT cercano")
         
     return cuit_cercano
 
@@ -200,6 +178,10 @@ def encontrar_cuits_cercanos(lat, lon, datos, radio_km=5):
     # Ordenar por distancia
     cercanos = sorted(cercanos, key=lambda x: x['distancia'])
     
+    # Para depuración
+    if st.session_state.debug:
+        st.write(f"Se encontraron {len(cercanos)} CUITs dentro del radio de {radio_km} km")
+    
     return cercanos
 
 # Función para parsear polígonos WKT a coordenadas Leaflet
@@ -228,6 +210,35 @@ def wkt_a_coordenadas(wkt_str):
     except Exception as e:
         st.warning(f"Error al convertir polígono WKT: {e}")
         return []
+
+# Modo de depuración
+if st.session_state.debug:
+    debug_container = st.expander("Información de depuración", expanded=True)
+    with debug_container:
+        st.warning("MODO DEPURACIÓN ACTIVO. Se mostrarán mensajes adicionales para diagnóstico.")
+        st.write("Estado de la aplicación:")
+        st.write(f"Punto seleccionado: {st.session_state.punto_seleccionado}")
+        st.write(f"Búsqueda realizada: {st.session_state.busqueda_realizada}")
+        st.write(f"Radio de búsqueda: {st.session_state.radio_busqueda} km")
+        if st.session_state.archivo_cargado:
+            st.write(f"Archivo cargado: {st.session_state.archivo_cargado['nombre']}")
+        else:
+            st.write("Archivo cargado: Ninguno")
+        st.write(f"Mostrar resultados: {st.session_state.mostrar_resultados}")
+        
+        # Detectar si se ejecuta localmente o en la nube
+        try:
+            local = os.path.exists(os.path.expanduser("~/.streamlit"))
+            st.write(f"Ejecución: {'Local' if local else 'En la nube'}")
+        except:
+            st.write("No se pudo determinar el entorno de ejecución")
+            
+        # Añadir un botón para simular una búsqueda con valores de prueba
+        if st.button("Simular búsqueda con coordenadas de prueba", key="simular_busqueda"):
+            st.session_state.punto_seleccionado = (-34.1, -60.1)  # Usar coordenadas de prueba
+            st.session_state.busqueda_realizada = True
+            st.session_state.mostrar_resultados = True
+            st.rerun()
 
 # Mostrar mensaje de instrucciones
 with st.sidebar:
@@ -305,7 +316,8 @@ if "lat" in params and "lng" in params:
         st.session_state.mostrar_resultados = True
         
         # Mostrar mensaje de depuración
-        st.write(f"Recibidos parámetros: lat={lat}, lng={lng}")
+        if st.session_state.debug:
+            st.write(f"Recibidos parámetros: lat={lat}, lng={lng}")
         
         # Limpiar los parámetros para evitar recargas duplicadas
         # Comentado temporalmente para depuración
@@ -391,6 +403,7 @@ with col1:
                 box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                 transition: all 0.3s;
                 z-index: 1001;
+                position: relative; /* Asegura que el z-index funcione */
             }}
             #use-coords-btn:hover {{
                 background-color: #45a049;
@@ -439,19 +452,23 @@ with col1:
                 right: 10px;
                 width: 300px;
                 height: 200px;
-                background: rgba(0,0,0,0.8);
+                background: rgba(0,0,0,0.7);
                 color: #00ff00;
                 font-family: monospace;
                 padding: 10px;
                 overflow: auto;
-                z-index: 999;
+                z-index: 900; /* Menor que los controles importantes */
+                border: 1px solid #333;
+                border-radius: 5px;
                 display: none;
             }}
         </style>
         
         <div id="map">
             <div class="search-control">
-                <input type="text" id="search-input" class="search-input" placeholder="Buscar ubicación...">
+                <form onsubmit="return false;">
+                    <input type="text" id="search-input" class="search-input" placeholder="Buscar ubicación...">
+                </form>
                 <div id="search-results" class="search-results"></div>
             </div>
         </div>
@@ -535,87 +552,102 @@ with col1:
             const searchResults = document.getElementById('search-results');
             let searchTimeout;
             
-            searchInput.addEventListener('input', function() {{
-                clearTimeout(searchTimeout);
-                const query = this.value.trim();
-                
-                if (query.length < 3) {{
-                    searchResults.style.display = 'none';
-                    return;
-                }}
-                
-                searchTimeout = setTimeout(() => {{
-                    log(`Buscando: ${{query}}`);
-                    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${{encodeURIComponent(query)}}&countrycodes=ar&limit=5`)
-                        .then(response => response.json())
-                        .then(data => {{
-                            searchResults.innerHTML = '';
-                            
-                            if (data.length === 0) {{
-                                searchResults.style.display = 'none';
-                                return;
-                            }}
-                            
-                            log(`Resultados encontrados: ${{data.length}}`);
-                            
-                            data.forEach(result => {{
-                                const item = document.createElement('div');
-                                item.className = 'search-result-item';
-                                item.textContent = result.display_name;
+            if (searchInput) {{
+                searchInput.addEventListener('input', function() {{
+                    clearTimeout(searchTimeout);
+                    const query = this.value.trim();
+                    
+                    if (query.length < 3) {{
+                        searchResults.style.display = 'none';
+                        return;
+                    }}
+                    
+                    searchTimeout = setTimeout(() => {{
+                        log(`Buscando: ${{query}}`);
+                        
+                        // URL de Nominatim para búsqueda de lugares en Argentina
+                        const searchUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${{encodeURIComponent(query)}}&countrycodes=ar&limit=5`;
+                        
+                        // Mostrar mensaje de carga
+                        searchResults.innerHTML = '<div class="search-result-item">Buscando...</div>';
+                        searchResults.style.display = 'block';
+                        
+                        fetch(searchUrl)
+                            .then(response => {{
+                                if (!response.ok) {{
+                                    throw new Error(`Error de red: ${{response.status}}`);
+                                }}
+                                return response.json();
+                            }})
+                            .then(data => {{
+                                searchResults.innerHTML = '';
                                 
-                                item.addEventListener('mouseenter', function() {{
-                                    this.style.backgroundColor = '#f0f0f0';
+                                if (data.length === 0) {{
+                                    searchResults.innerHTML = '<div class="search-result-item">No se encontraron resultados</div>';
+                                    return;
+                                }}
+                                
+                                log(`Resultados encontrados: ${{data.length}}`);
+                                
+                                data.forEach(result => {{
+                                    const item = document.createElement('div');
+                                    item.className = 'search-result-item';
+                                    item.textContent = result.display_name;
+                                    
+                                    item.addEventListener('click', function() {{
+                                        const lat = parseFloat(result.lat);
+                                        const lon = parseFloat(result.lon);
+                                        
+                                        log(`Ubicación seleccionada: ${{lat}}, ${{lon}}`);
+                                        
+                                        // Actualizar el mapa
+                                        map.setView([lat, lon], 13);
+                                        
+                                        // Actualizar el marcador
+                                        if (puntoSeleccionado) {{
+                                            map.removeLayer(puntoSeleccionado);
+                                        }}
+                                        
+                                        puntoSeleccionado = L.marker([lat, lon], {{
+                                            icon: L.icon({{
+                                                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                                                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                                                iconSize: [25, 41],
+                                                iconAnchor: [12, 41],
+                                                popupAnchor: [1, -34],
+                                                shadowSize: [41, 41]
+                                            }})
+                                        }}).addTo(map);
+                                        
+                                        // Actualizar coordenadas
+                                        document.getElementById('selected-lat').textContent = lat.toFixed(4);
+                                        document.getElementById('selected-lng').textContent = lon.toFixed(4);
+                                        
+                                        // Ocultar resultados
+                                        searchResults.style.display = 'none';
+                                        searchInput.value = result.display_name;
+                                    }});
+                                    
+                                    searchResults.appendChild(item);
                                 }});
                                 
-                                item.addEventListener('mouseleave', function() {{
-                                    this.style.backgroundColor = '';
-                                }});
-                                
-                                item.addEventListener('click', function() {{
-                                    const lat = parseFloat(result.lat);
-                                    const lon = parseFloat(result.lon);
-                                    
-                                    log(`Ubicación seleccionada: ${{lat}}, ${{lon}}`);
-                                    
-                                    // Actualizar el mapa
-                                    map.setView([lat, lon], 13);
-                                    
-                                    // Actualizar el marcador
-                                    if (puntoSeleccionado) {{
-                                        map.removeLayer(puntoSeleccionado);
-                                    }}
-                                    
-                                    puntoSeleccionado = L.marker([lat, lon], {{
-                                        icon: L.icon({{
-                                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-                                            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                                            iconSize: [25, 41],
-                                            iconAnchor: [12, 41],
-                                            popupAnchor: [1, -34],
-                                            shadowSize: [41, 41]
-                                        }})
-                                    }}).addTo(map);
-                                    
-                                    // Actualizar coordenadas
-                                    document.getElementById('selected-lat').textContent = lat.toFixed(4);
-                                    document.getElementById('selected-lng').textContent = lon.toFixed(4);
-                                    
-                                    // Ocultar resultados
-                                    searchResults.style.display = 'none';
-                                    searchInput.value = result.display_name;
-                                }});
-                                
-                                searchResults.appendChild(item);
+                                searchResults.style.display = 'block';
+                            }})
+                            .catch(error => {{
+                                log(`Error en la búsqueda: ${{error.message}}`);
+                                searchResults.innerHTML = `<div class="search-result-item">Error: ${{error.message}}</div>`;
+                                console.error('Error en la búsqueda:', error);
                             }});
-                            
-                            searchResults.style.display = 'block';
-                        }})
-                        .catch(error => {{
-                            log(`Error en la búsqueda: ${{error.message}}`);
-                            searchResults.style.display = 'none';
-                        }});
-                }}, 300);
-            }});
+                    }}, 500);
+                }});
+                
+                // Evitar que el formulario se envíe al presionar Enter
+                searchInput.form?.addEventListener('submit', function(e) {{
+                    e.preventDefault();
+                }});
+            }} else {{
+                console.error('Elemento search-input no encontrado');
+            }}
             
             // Ocultar resultados al hacer clic fuera
             document.addEventListener('click', function(e) {{
@@ -818,25 +850,45 @@ with col1:
             }});
             
             // Evento para el botón de usar coordenadas
-            document.getElementById('use-coords-btn').addEventListener('click', function() {{
-                const lat = parseFloat(document.getElementById('selected-lat').textContent);
-                const lng = parseFloat(document.getElementById('selected-lng').textContent);
-                
-                if (isNaN(lat) || isNaN(lng)) {{
-                    log('Coordenadas inválidas');
-                    return;
-                }}
-                
-                log(`Usando coordenadas: ${{lat}}, ${{lng}}`);
-                
-                // Método 1: Recargar la página con parámetros
-                const newUrl = new URL(window.location.href);
-                newUrl.searchParams.set('lat', lat);
-                newUrl.searchParams.set('lng', lng);
-                
-                log(`Redirigiendo a: ${{newUrl.toString()}}`);
-                window.location.href = newUrl.toString();
-            }});
+            const useCoordsBtn = document.getElementById('use-coords-btn');
+            if (useCoordsBtn) {{
+                useCoordsBtn.addEventListener('click', function() {{
+                    const lat = parseFloat(document.getElementById('selected-lat').textContent);
+                    const lng = parseFloat(document.getElementById('selected-lng').textContent);
+                    
+                    if (isNaN(lat) || isNaN(lng)) {{
+                        alert('Coordenadas inválidas. Por favor, selecciona un punto en el mapa primero.');
+                        log('Coordenadas inválidas');
+                        return;
+                    }}
+                    
+                    log(`Usando coordenadas: ${{lat}}, ${{lng}}`);
+                    
+                    // Mostrar información directamente en la página
+                    const coordsInfo = document.createElement('div');
+                    coordsInfo.style.position = 'fixed';
+                    coordsInfo.style.top = '50%';
+                    coordsInfo.style.left = '50%';
+                    coordsInfo.style.transform = 'translate(-50%, -50%)';
+                    coordsInfo.style.padding = '20px';
+                    coordsInfo.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+                    coordsInfo.style.color = 'white';
+                    coordsInfo.style.borderRadius = '10px';
+                    coordsInfo.style.zIndex = '10000';
+                    coordsInfo.innerHTML = 'Buscando productores cercanos...';
+                    document.body.appendChild(coordsInfo);
+                    
+                    // Método 1: Recargar la página con parámetros
+                    const newUrl = new URL(window.location.href);
+                    newUrl.searchParams.set('lat', lat);
+                    newUrl.searchParams.set('lng', lng);
+                    
+                    log(`Redirigiendo a: ${{newUrl.toString()}}`);
+                    window.location.href = newUrl.toString();
+                }});
+            }} else {{
+                console.error('Botón de usar coordenadas no encontrado');
+            }}
             
             // Función para cargar archivo KML/KMZ/Shapefile
             function cargarArchivo(tipo, nombre, datos) {{
@@ -1050,7 +1102,13 @@ with col1:
             const archivoData = {archivo_json};
             if (archivoData && archivoData.nombre) {{
                 log(`Archivo detectado: ${{archivoData.nombre}}`);
-                cargarArchivo(archivoData.tipo, archivoData.nombre, archivoData.b64);
+                try {{
+                    cargarArchivo(archivoData.tipo, archivoData.nombre, archivoData.b64);
+                    console.log('Archivo cargado correctamente');
+                }} catch (error) {{
+                    console.error('Error al cargar el archivo:', error);
+                    alert(`Error al cargar el archivo ${{archivoData.nombre}}: ${{error.message}}`);
+                }}
             }}
             
             // Si hay un punto seleccionado previamente, mostrarlo
@@ -1118,7 +1176,7 @@ with col1:
         """
         
         # Mostrar el mapa con Leaflet
-        components_result = st.components.v1.html(mapa_html, height=600)
+        components.html(mapa_html, height=600)
         
     else:
         st.warning("No hay datos de ubicación disponibles para mostrar en el mapa.")
@@ -1220,23 +1278,4 @@ with col2:
                     **Localidad:** {cercano.get('localidad', 'No disponible')}  
                     **Superficie:** {cercano.get('superficie', 'No disponible')} ha  
                     **Distancia:** {cercano['distancia']} km  
-                    **Coordenadas:** Lat {cercano['latitud']:.4f}, Lng {cercano['longitud']:.4f}
-                    """)
-        else:
-            st.warning(f"No se encontraron productores en un radio de {radio_busqueda} km")
-    else:
-        st.info("👈 Haz clic en el mapa y presiona 'USAR ESTAS COORDENADAS' para ver resultados.")
-
-# Instrucciones de uso
-st.markdown("---")
-st.subheader("Instrucciones de uso")
-st.markdown("""
-1. **Buscar localidad**: Usa la barra de búsqueda en la parte superior izquierda del mapa.
-2. **Selección en mapa**: Haz clic en cualquier punto del mapa.
-3. **Selección de polígonos**: Puedes seleccionar polígonos (tanto los cargados desde CSV como desde archivos KML/SHP) haciendo clic en ellos y usando el botón en su popup.
-4. **Usar coordenadas**: Haz clic en el botón "USAR ESTAS COORDENADAS" para consultar el punto seleccionado.
-5. **Resultados**: Verás el productor más cercano y todos los que estén dentro del radio especificado.
-6. **Filtros**: Usa el filtro por Razón Social para mostrar productores específicos.
-7. **Radio de búsqueda**: Ingresa directamente el radio de búsqueda deseado (en kilómetros).
-8. **Carga de archivos**: Sube archivos KML, KMZ o Shapefile desde el panel lateral para visualizarlos en el mapa.
-""")
+                
