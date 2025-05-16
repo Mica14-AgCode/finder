@@ -262,6 +262,31 @@ if not datos_productores.empty:
     cuits_unicos = datos_productores['cuit'].nunique()
     st.success(f"Datos cargados correctamente: {len(datos_productores)} parcelas de {cuits_unicos} productores")
 
+# Modo depuración opcional
+show_debug = st.checkbox("Mostrar información de depuración")
+if show_debug:
+    st.write("Estado de la aplicación:")
+    st.write({
+        "punto_seleccionado": st.session_state.punto_seleccionado,
+        "mostrar_resultado": st.session_state.mostrar_resultado,
+        "radio_busqueda": st.session_state.radio_busqueda
+    })
+    
+    if 'poligono' in datos_productores.columns:
+        st.write(f"La columna 'poligono' existe en el CSV")
+        
+        # Mostrar algunos ejemplos de polígonos
+        poligonos_count = datos_productores['poligono'].notna().sum()
+        st.write(f"Número de polígonos en el CSV: {poligonos_count}")
+        
+        if poligonos_count > 0:
+            st.write("Ejemplos de polígonos del CSV:")
+            for i, fila in datos_productores.iterrows():
+                if pd.notna(fila.get('poligono')):
+                    poligono_text = str(fila['poligono'])
+                    st.code(poligono_text[:200] + "..." if len(poligono_text) > 200 else poligono_text)
+                    break
+
 # Layout principal
 col1, col2 = st.columns([3, 1])
 
@@ -296,6 +321,17 @@ with col1:
                             'latitud': float(fila['latitud']),
                             'longitud': float(fila['longitud'])
                         })
+        
+        # Si no hay polígonos, incluir marcadores de productores
+        if not poligonos_result:
+            for productor in productores_cercanos:
+                poligonos_result.append({
+                    'marker': True,
+                    'cuit': productor['cuit'],
+                    'titular': productor['titular'],
+                    'latitud': float(productor['latitud']),
+                    'longitud': float(productor['longitud'])
+                })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -395,7 +431,7 @@ with col1:
                 }});
                 
                 // Agregar capa base - OpenStreetMap
-                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}/{{z}}/{{x}}/{{y}}.png', {{
+                const osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 }});
                 
@@ -416,8 +452,8 @@ with col1:
                 
                 // Dibujar polígonos solo si hay resultados de búsqueda
                 if (mostrarResultado && poligonos.length > 0) {{
-                    dibujarPoligonos();
-                    console.log(`Se dibujaron ${{poligonos.length}} polígonos`);
+                    dibujarResultados();
+                    console.log(`Se dibujaron ${{poligonos.length}} elementos en el mapa`);
                 }}
                 
                 // Evento de clic en el mapa
@@ -459,13 +495,15 @@ with col1:
                 }}
             }}
             
-            // Función para dibujar polígonos
-            function dibujarPoligonos() {{
+            // Función para dibujar polígonos y marcadores
+            function dibujarResultados() {{
                 polygonsLayer.clearLayers();
+                markersLayer.clearLayers();
                 
-                poligonos.forEach(poligono => {{
-                    if (poligono.coords && poligono.coords.length > 0) {{
-                        const polygon = L.polygon(poligono.coords, {{
+                poligonos.forEach(elemento => {{
+                    if (elemento.coords && elemento.coords.length > 0) {{
+                        // Dibujar polígono
+                        const polygon = L.polygon(elemento.coords, {{
                             color: '#3388ff',
                             weight: 2,
                             opacity: 0.7,
@@ -473,9 +511,22 @@ with col1:
                         }}).addTo(polygonsLayer);
                         
                         polygon.bindPopup(`
-                            <strong>CUIT:</strong> ${{poligono.cuit}}<br>
-                            <strong>Razón Social:</strong> ${{poligono.titular}}<br>
-                            <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                            <strong>CUIT:</strong> ${{elemento.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{elemento.titular}}<br>
+                            <button onclick="buscarCoordenadas(${{elemento.latitud}}, ${{elemento.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                Buscar este productor
+                            </button>
+                        `);
+                    }}
+                    
+                    // Si es un marcador o si tiene coordenadas
+                    if (elemento.marker || (elemento.latitud && elemento.longitud)) {{
+                        L.marker([elemento.latitud, elemento.longitud], {{
+                            title: elemento.titular
+                        }}).addTo(markersLayer).bindPopup(`
+                            <strong>CUIT:</strong> ${{elemento.cuit}}<br>
+                            <strong>Razón Social:</strong> ${{elemento.titular}}<br>
+                            <button onclick="buscarCoordenadas(${{elemento.latitud}}, ${{elemento.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
                                 Buscar este productor
                             </button>
                         `);
@@ -515,8 +566,10 @@ with col2:
     st.subheader("Resultados de la búsqueda")
     
     # Verificar si hay parámetros en la URL para realizar la búsqueda
+    params_procesados = False
+    
+    # Intento usando st.query_params (versión más reciente)
     try:
-        # Usar st.query_params en lugar de experimental_get_query_params
         query_params = st.query_params
         if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
             try:
@@ -530,16 +583,21 @@ with col2:
                     st.session_state.mostrar_resultado = True
                     
                     # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                    # Actualizar para usar el nuevo método
                     for key in list(query_params.keys()):
                         del query_params[key]
                     
-                    # Forzar recarga para mostrar resultados actualizados
-                    st.experimental_rerun()
+                    params_procesados = True
+                    
+                    # No usar experimental_rerun, puede causar problemas
             except Exception as e:
-                st.error(f"Error al procesar las coordenadas desde la URL: {e}")
-    except:
-        # Fallback para versiones anteriores de Streamlit
+                if show_debug:
+                    st.error(f"Error al procesar query_params: {e}")
+    except Exception as e:
+        if show_debug:
+            st.error(f"Error accediendo a st.query_params: {e}")
+    
+    # Fallback para versiones anteriores de Streamlit
+    if not params_procesados:
         try:
             query_params = st.experimental_get_query_params()
             if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
@@ -556,12 +614,15 @@ with col2:
                         # Limpiar los parámetros para evitar búsquedas repetidas en recargas
                         st.experimental_set_query_params()
                         
-                        # Forzar recarga para mostrar resultados actualizados
-                        st.experimental_rerun()
+                        params_procesados = True
+                        
+                        # No usar experimental_rerun, puede causar problemas
                 except Exception as e:
-                    st.error(f"Error al procesar las coordenadas desde la URL: {e}")
+                    if show_debug:
+                        st.error(f"Error al procesar experimental_get_query_params: {e}")
         except Exception as e:
-            st.warning(f"No se pudo acceder a los parámetros de la URL. Por favor utiliza una versión más reciente de Streamlit. Error: {e}")
+            if show_debug:
+                st.error(f"Error accediendo a experimental_get_query_params: {e}")
     
     # Mostrar resultados si tenemos un punto seleccionado
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
