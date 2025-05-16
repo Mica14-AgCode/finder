@@ -1,4 +1,41 @@
-import streamlit as st
+            // Función para mostrar productores como marcadores cuando no hay polígonos
+            function mostrarProductoresComoMarcadores() {{
+                // Crear marcadores para los productores
+                fetch(`${{window.location.pathname}}?get_productores=true`)
+                    .then(response => response.json())
+                    .then(data => {{
+                        console.log(`Mostrando ${{data.length}} productores como marcadores`);
+                        
+                        data.forEach(productor => {{
+                            if (productor.latitud && productor.longitud) {{
+                                L.marker([productor.latitud, productor.longitud], {{
+                                    title: productor.titular
+                                }}).addTo(map).bindPopup(`
+                                    <strong>CUIT:</strong> ${{productor.cuit}}<br>
+                                    <strong>Razón Social:</strong> ${{productor.titular}}<br>
+                                    <button onclick="buscarCoordenadas(${{productor.latitud}}, ${{productor.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                        Buscar este productor
+                                    </button>
+                                `);
+                            }}
+                        }});
+                    }})
+                    .catch(error => {{
+                        console.error("Error al cargar productores:", error);
+                        // Si falla la solicitud, creamos marcadores con los datos que tenemos
+                        poligonos.forEach(poligono => {{
+                            L.marker([poligono.latitud, poligono.longitud], {{
+                                title: poligono.titular
+                            }}).addTo(map).bindPopup(`
+                                <strong>CUIT:</strong> ${{poligono.cuit}}<br>
+                                <strong>Razón Social:</strong> ${{poligono.titular}}<br>
+                                <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                    Buscar este productor
+                                </button>
+                            `);
+                        }});
+                    }});
+            }}import streamlit as st
 import pandas as pd
 import math
 import os
@@ -257,6 +294,43 @@ datos_productores = cargar_datos()
 if not datos_productores.empty:
     st.success(f"Datos cargados correctamente: {len(datos_productores)} registros")
 
+# Si hay el parámetro get_productores en la URL, devolver los datos de los productores como JSON
+try:
+    query_params = st.query_params
+    if 'get_productores' in query_params:
+        productores_json = []
+        for idx, fila in datos_productores.iterrows():
+            if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+                productores_json.append({
+                    'cuit': fila['cuit'],
+                    'titular': fila['titular'],
+                    'latitud': float(fila['latitud']),
+                    'longitud': float(fila['longitud']),
+                    'renspa': fila.get('renspa', 'No disponible'),
+                    'localidad': fila.get('localidad', 'No disponible')
+                })
+        st.json(productores_json)
+        st.stop()
+except:
+    try:
+        query_params = st.experimental_get_query_params()
+        if 'get_productores' in query_params:
+            productores_json = []
+            for idx, fila in datos_productores.iterrows():
+                if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+                    productores_json.append({
+                        'cuit': fila['cuit'],
+                        'titular': fila['titular'],
+                        'latitud': float(fila['latitud']),
+                        'longitud': float(fila['longitud']),
+                        'renspa': fila.get('renspa', 'No disponible'),
+                        'localidad': fila.get('localidad', 'No disponible')
+                    })
+            st.json(productores_json)
+            st.stop()
+    except:
+        pass
+
 # Layout principal
 col1, col2 = st.columns([3, 1])
 
@@ -282,9 +356,35 @@ with col1:
                         'coords': coords,
                         'cuit': fila['cuit'],
                         'titular': fila['titular'],
-                        'latitud': fila['latitud'],
-                        'longitud': fila['longitud']
+                        'latitud': float(fila['latitud']),
+                        'longitud': float(fila['longitud'])
                     })
+    
+    # Para depuración
+    if st.checkbox("Mostrar información de depuración"):
+        st.write(f"Se encontraron {len(poligonos)} polígonos en los datos")
+        st.write(f"Total de productores con coordenadas: {len(productores_marcadores)}")
+        if 'poligono' in datos_productores.columns:
+            st.write(f"La columna 'poligono' existe en el CSV")
+            # Mostrar algunos ejemplos de polígonos
+            st.write("Ejemplos de polígonos:")
+            for i, fila in datos_productores.iterrows():
+                if pd.notna(fila.get('poligono')):
+                    st.code(str(fila['poligono'])[:200] + "..." if len(str(fila['poligono'])) > 200 else str(fila['poligono']))
+                    break
+    
+    # Si no hay polígonos, preparar datos de productores para mostrar como marcadores
+    productores_marcadores = []
+    for idx, fila in datos_productores.iterrows():
+        if pd.notna(fila['latitud']) and pd.notna(fila['longitud']):
+            productores_marcadores.append({
+                'cuit': fila['cuit'],
+                'titular': fila['titular'],
+                'latitud': float(fila['latitud']),
+                'longitud': float(fila['longitud']),
+                'renspa': fila.get('renspa', 'No disponible'),
+                'localidad': fila.get('localidad', 'No disponible')
+            })
     
     # Contenido HTML para el mapa Leaflet
     mapa_html = f"""
@@ -401,6 +501,14 @@ with col1:
                 // Dibujar polígonos si hay
                 if (poligonos.length > 0) {{
                     dibujarPoligonos();
+                    console.log(`Se dibujaron ${{poligonos.length}} polígonos`);
+                }} else {{
+                    console.log("No hay polígonos para dibujar");
+                }}
+                
+                // Si no hay polígonos, al menos mostramos marcadores para los productores
+                if (poligonos.length === 0) {{
+                    mostrarProductoresComoMarcadores();
                 }}
                 
                 // Evento de clic en el mapa
@@ -443,8 +551,22 @@ with col1:
                             color: '#3388ff',
                             weight: 2,
                             opacity: 0.7,
-                            fillOpacity: 0.1
+                            fillOpacity: 0.2
                         }}).addTo(polygonsLayer);
+                        
+                        // Añadir un marcador en el centro del polígono
+                        const centroid = getCentroid(poligono.coords);
+                        if (centroid) {{
+                            L.marker([centroid[0], centroid[1]], {{
+                                title: poligono.titular
+                            }}).addTo(map).bindPopup(`
+                                <strong>CUIT:</strong> ${{poligono.cuit}}<br>
+                                <strong>Razón Social:</strong> ${{poligono.titular}}<br>
+                                <button onclick="buscarCoordenadas(${{poligono.latitud}}, ${{poligono.longitud}})" style="margin-top:5px; padding:3px 8px; background:#4CAF50; color:white; border:none; border-radius:3px; cursor:pointer;">
+                                    Buscar este productor
+                                </button>
+                            `);
+                        }}
                         
                         polygon.bindPopup(`
                             <strong>CUIT:</strong> ${{poligono.cuit}}<br>
@@ -455,6 +577,21 @@ with col1:
                         `);
                     }}
                 }});
+            }}
+            
+            // Función para calcular el centroide de un polígono
+            function getCentroid(coords) {{
+                if (!coords || coords.length === 0) return null;
+                
+                let sumX = 0;
+                let sumY = 0;
+                
+                for (let i = 0; i < coords.length; i++) {{
+                    sumX += coords[i][0];
+                    sumY += coords[i][1];
+                }}
+                
+                return [sumX / coords.length, sumY / coords.length];
             }}
             
             // Función para buscar en coordenadas
@@ -489,22 +626,47 @@ with col2:
     st.subheader("Resultados de la búsqueda")
     
     # Verificar si hay parámetros en la URL para realizar la búsqueda
-    query_params = st.experimental_get_query_params()
-    if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
-        try:
-            lat = float(query_params['lat'][0])
-            lon = float(query_params['lng'][0])
-            action = query_params['action'][0]
-            
-            # Solo realizar la búsqueda si la acción es "search"
-            if action == "search":
-                st.session_state.punto_seleccionado = (lat, lon)
-                st.session_state.mostrar_resultado = True
+    try:
+        # Usar st.query_params en lugar de experimental_get_query_params
+        query_params = st.query_params
+        if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
+            try:
+                lat = float(query_params['lat'])
+                lon = float(query_params['lng'])
+                action = query_params['action']
                 
-                # Limpiar los parámetros para evitar búsquedas repetidas en recargas
-                st.experimental_set_query_params()
+                # Solo realizar la búsqueda si la acción es "search"
+                if action == "search":
+                    st.session_state.punto_seleccionado = (lat, lon)
+                    st.session_state.mostrar_resultado = True
+                    
+                    # Limpiar los parámetros para evitar búsquedas repetidas en recargas
+                    # Actualizar para usar el nuevo método
+                    for key in list(query_params.keys()):
+                        del query_params[key]
+            except:
+                st.error("Error al procesar las coordenadas desde la URL")
+    except:
+        # Fallback para versiones anteriores de Streamlit
+        try:
+            query_params = st.experimental_get_query_params()
+            if 'lat' in query_params and 'lng' in query_params and 'action' in query_params:
+                try:
+                    lat = float(query_params['lat'][0])
+                    lon = float(query_params['lng'][0])
+                    action = query_params['action'][0]
+                    
+                    # Solo realizar la búsqueda si la acción es "search"
+                    if action == "search":
+                        st.session_state.punto_seleccionado = (lat, lon)
+                        st.session_state.mostrar_resultado = True
+                        
+                        # Limpiar los parámetros para evitar búsquedas repetidas en recargas
+                        st.experimental_set_query_params()
+                except:
+                    st.error("Error al procesar las coordenadas desde la URL")
         except:
-            st.error("Error al procesar las coordenadas desde la URL")
+            st.warning("No se pudo acceder a los parámetros de la URL. Por favor utiliza una versión más reciente de Streamlit.")
     
     # Mostrar resultados si tenemos un punto seleccionado
     if st.session_state.mostrar_resultado and st.session_state.punto_seleccionado:
